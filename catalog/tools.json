@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/t33n-software/go-quality-authority/main/catalog/tools.schema.json",
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "staticcheck",
+      "module": "honnef.co/go/tools",
+      "package": "honnef.co/go/tools/cmd/staticcheck",
+      "purpose": "static analysis"
+    },
+    {
+      "name": "govulncheck",
+      "module": "golang.org/x/vuln",
+      "package": "golang.org/x/vuln/cmd/govulncheck",
+      "purpose": "vulnerability analysis"
+    },
+    {
+      "name": "lefthook",
+      "module": "github.com/evilmartians/lefthook/v2",
+      "package": "github.com/evilmartians/lefthook/v2",
+      "purpose": "hook management"
+    },
+    {
+      "name": "quality-gate",
+      "module": "github.com/t33n-software/go-quality-authority",
+      "package": "github.com/t33n-software/go-quality-authority/cmd/quality-gate",
+      "purpose": "quality orchestration"
+    },
+    {
+      "name": "check-coverage",
+      "module": "github.com/t33n-software/go-quality-authority",
+      "package": "github.com/t33n-software/go-quality-authority/cmd/check-coverage",
+      "purpose": "coverage gate"
+    }
+  ]
+}
