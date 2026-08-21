@@ -17,3 +17,15 @@ does not rely on any external governance repository or unpublished rule set.
 |---|---|---|
 | Local repository | VERIFIED | `main` is initialized; every audit and release gate begins by checking the current Git status |
 | Go module | VERIFIED | `github.com/t33n-software/go-quality-authority`, language Go 1.26 and pinned toolchain Go 1.26.6 |
+
+## Core capabilities
+
+| Capability | Status | Verification |
+|---|---|---|
+| Quality-gate orchestrator | VERIFIED | `cmd/quality-gate` reads the schema-validated config seam, asserts the controlled toolchain, runs the canonical gate set, and applies convention discovery; same-package whitebox tests |
+| Coverage gate | VERIFIED | `cmd/check-coverage` enforces test-source presence and exact 100.0-percent statement coverage; same-package whitebox tests |
+| Configuration seam schema | VERIFIED | `schemas/quality-gate-config/v1/schema.json` strictly decoded; conformance vectors prove every acceptance and rejection |
+| Tool catalog | VERIFIED | `catalog/tools.json` carries the canonical admitted Go tools; contract test |
+| Convention discovery | VERIFIED | every `./cmd/*` binary and convention-placed fuzz target is discovered without configuration; same-package whitebox tests |
+| Boundary fuzzing | VERIFIED | `FuzzDecodeConfig` fuzzes the configuration decoder |
+| Dogfooding | VERIFIED | `go run -mod=readonly ./cmd/quality-gate` runs the canonical gate set against this repository |
