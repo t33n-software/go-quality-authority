@@ -1,0 +1,10 @@
+commit-msg:
+  commands:
+    validate-commit-message:
+      run: git-governance --interactive never commit validate --message-file "{1}"
+
+pre-push:
+  commands:
+    validate-push:
+      run: git-governance --interactive never validate pre-push --remote "{1}"
+      use_stdin: true

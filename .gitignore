@@ -1,0 +1,9 @@
+# Local build and test outputs.
+/.build/
+/dist/
+/coverage/
+/.cache/
+*.coverprofile
+*.test
+*.out
+*.cov
