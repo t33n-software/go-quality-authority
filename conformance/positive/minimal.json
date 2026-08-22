@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 3,
+  "toolchain": { "goVersion": "1.26.6" },
+  "gates": [
+    {
+      "name": "full-local-build",
+      "command": "go",
+      "args": ["tool", "-modfile", "tools/go.mod", "quality-gate"],
+      "timeout": "15m"
+    }
+  ]
+}

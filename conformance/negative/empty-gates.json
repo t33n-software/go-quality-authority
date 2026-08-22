@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 3,
+  "toolchain": { "goVersion": "1.26.6" },
+  "gates": []
+}

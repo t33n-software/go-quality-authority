@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 3,
+  "toolchain": { "goVersion": "1.26.6" },
+  "defaults": {
+    "includeFamilies": ["feature", "fix", "docs", "refactor", "chore", "test", "perf", "hotfix"]
+  },
+  "gates": [
+    {
+      "name": "full-local-build",
+      "command": "go",
+      "args": ["run", "-mod=readonly", "./cmd/quality-gate"],
+      "timeout": "15m"
+    }
+  ]
+}
