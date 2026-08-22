@@ -28,7 +28,7 @@ jobs:
       actions: read
       contents: write
       deployments: write
-    uses: t33n-software/git-governance/.github/workflows/reusable-execute-protected-line-request.yml@fdc47d35db4e082836d29a126aa168e736b42b3f
+    uses: t33n-software/git-governance/.github/workflows/reusable-execute-protected-line-request.yml@5d6bccd061e05dae56ca7c15eddfc942c92cca79
     with:
       request_id: ${{ inputs.request_id }}
       recovery: ${{ inputs.recovery }}
