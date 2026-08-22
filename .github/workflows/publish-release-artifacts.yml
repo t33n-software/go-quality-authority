@@ -1,0 +1,34 @@
+name: Publish Release Artifacts
+
+run-name: Release ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable v<semver> tag to release.
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release delivery
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: t33n-software/git-governance/.github/workflows/reusable-publish-release-artifacts.yml@fdc47d35db4e082836d29a126aa168e736b42b3f
+    with:
+      tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      delivery_variant: ${{ vars.GIT_GOVERNANCE_DELIVERY_VARIANT }}
+      delivery_environment: release-delivery
+      repository: ${{ github.repository }}

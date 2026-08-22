@@ -1,0 +1,46 @@
+name: Deliver Approved Main Hotfix
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+  workflow_dispatch:
+    inputs:
+      hotfix_branch:
+        description: Merged hotfix/<ticket>-<slug> branch to redeliver.
+        required: true
+        type: string
+      record:
+        description: Optional repository-relative hotfix release record path.
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: hotfix-delivery-${{ github.event.pull_request.number || inputs.hotfix_branch }}
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    name: Hotfix delivery
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.merged == true &&
+       github.event.pull_request.base.ref == 'main' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.event.pull_request.head.ref, 'hotfix/')) ||
+      github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
+    uses: t33n-software/git-governance/.github/workflows/reusable-hotfix-delivery.yml@fdc47d35db4e082836d29a126aa168e736b42b3f
+    with:
+      hotfix_branch: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || inputs.hotfix_branch }}
+      record: ${{ inputs.record }}
+      delivery_variant: ${{ vars.GIT_GOVERNANCE_DELIVERY_VARIANT }}
+      delivery_environment: hotfix-delivery
+      governance_repository: t33n-software/git-governance

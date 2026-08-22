@@ -1,0 +1,37 @@
+name: Execute Protected-Line Request
+
+run-name: Execute protected-line request ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Durable release-request identifier authorized by the request controller.
+        required: true
+        type: string
+      recovery:
+        description: Read-only recovery finalization of a verification-pending request on the main line.
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: protected-line-request-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    name: Release execution
+    permissions:
+      actions: read
+      contents: write
+      deployments: write
+    uses: t33n-software/git-governance/.github/workflows/reusable-execute-protected-line-request.yml@fdc47d35db4e082836d29a126aa168e736b42b3f
+    with:
+      request_id: ${{ inputs.request_id }}
+      recovery: ${{ inputs.recovery }}
+      repository: ${{ github.repository }}
+      execution_environment: release-execution
+      governance_repository: t33n-software/git-governance

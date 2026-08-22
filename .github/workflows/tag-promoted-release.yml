@@ -1,0 +1,32 @@
+name: Tag Promoted Release
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+permissions: {}
+
+concurrency:
+  group: release-tag-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Release tag
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release/') &&
+      github.event.pull_request.merge_commit_sha != ''
+    permissions:
+      actions: write
+      contents: write
+    uses: t33n-software/git-governance/.github/workflows/reusable-tag-promoted-release.yml@fdc47d35db4e082836d29a126aa168e736b42b3f
+    with:
+      release_branch: ${{ github.event.pull_request.head.ref }}
+      merge_sha: ${{ github.event.pull_request.merge_commit_sha }}
+      delivery_environment: release-delivery
