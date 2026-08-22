@@ -29,3 +29,5 @@ does not rely on any external governance repository or unpublished rule set.
 | Convention discovery | VERIFIED | every `./cmd/*` binary and convention-placed fuzz target is discovered without configuration; same-package whitebox tests |
 | Boundary fuzzing | VERIFIED | `FuzzDecodeConfig` fuzzes the configuration decoder |
 | Dogfooding | VERIFIED | `go run -mod=readonly ./cmd/quality-gate` runs the canonical gate set against this repository |
+| Release lifecycle adoption | VERIFIED | the seven callers under `.github/workflows/` are byte-identical to the canonical masters of `t33n-software/git-governance` and hash-match `caller-hashes.json` (LF-normalized) |
+| Governance CLI tool channel | VERIFIED | `tools/go.mod` pins `github.com/t33n-software/git-governance/cmd/git-governance` plus the self-pinned `quality-gate` and `check-coverage`; `go build -modfile tools/go.mod` proves the lane build |

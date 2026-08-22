@@ -72,3 +72,18 @@ static analysis, vulnerability analysis, the boundary fuzz lane, the Lefthook
 configuration validation, and the build-and-smoke of every command binary —
 followed by the in-process 100-percent coverage gate. See
 `docs/development/VERIFICATION.md` for the full contract.
+
+## Release lifecycle
+
+This home adopts the centralized release and hotfix lifecycle family owned by
+`t33n-software/git-governance` as byte-identical, hash-pinned callers under
+`.github/workflows/` — never by copy. The family contract lives at
+`workflows/github/CONTRACT.md` in that home; the caller pins and hashes are
+bound in `workflows/github/callers/release-lifecycle/caller-hashes.json`.
+
+The bound delivery variant is `github-only` (repository variable
+`GIT_GOVERNANCE_DELIVERY_VARIANT`): a signed immutable tag plus a GitHub
+release with a provenance-attested source manifest. The broker-bound hotfix
+lanes fail closed in this variant until their evidence path is migrated (the
+named deferral of the family contract). The lanes build the governance CLI
+from the pinned class-D tool in `tools/go.mod` — never from a source checkout.
