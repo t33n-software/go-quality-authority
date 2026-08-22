@@ -37,7 +37,7 @@ jobs:
       actions: write
       contents: write
       id-token: write
-    uses: t33n-software/git-governance/.github/workflows/reusable-hotfix-delivery.yml@5d6bccd061e05dae56ca7c15eddfc942c92cca79
+    uses: t33n-software/git-governance/.github/workflows/reusable-hotfix-delivery.yml@3b0d034fc773b38dd13e3b13b24d1cbd7c2b0368
     with:
       hotfix_branch: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || inputs.hotfix_branch }}
       record: ${{ inputs.record }}
