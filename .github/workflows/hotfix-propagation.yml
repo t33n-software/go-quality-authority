@@ -1,0 +1,39 @@
+name: Publish Approved Hotfix Propagation
+
+on:
+  workflow_dispatch:
+    inputs:
+      hotfix_branch:
+        description: Merged hotfix/<ticket>-<slug> branch with a delivered patch record.
+        required: true
+        type: string
+      target_line:
+        description: Declared develop, release/<semver>, or support/<major.minor> propagation target.
+        required: true
+        type: string
+      record:
+        description: Optional controlled hotfix release record path.
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: hotfix-propagation-${{ inputs.hotfix_branch }}-${{ inputs.target_line }}
+  cancel-in-progress: false
+
+jobs:
+  propagate:
+    name: Hotfix propagation
+    permissions:
+      contents: read
+      id-token: write
+    uses: t33n-software/git-governance/.github/workflows/reusable-hotfix-propagation.yml@fdc47d35db4e082836d29a126aa168e736b42b3f
+    with:
+      hotfix_branch: ${{ inputs.hotfix_branch }}
+      target_line: ${{ inputs.target_line }}
+      record: ${{ inputs.record }}
+      delivery_variant: ${{ vars.GIT_GOVERNANCE_DELIVERY_VARIANT }}
+      delivery_environment: hotfix-delivery
+      propagation_environment: hotfix-propagation
+      governance_repository: t33n-software/git-governance

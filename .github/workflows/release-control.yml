@@ -1,0 +1,57 @@
+name: Governed Release Control
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Verify the broker or authorize a protected release or support-line request.
+        required: true
+        type: choice
+        options:
+          - broker-smoke
+          - release-request
+      version:
+        description: Release SemVer or support major.minor version without a leading v; required for release-request.
+        required: false
+        type: string
+      kind:
+        description: Protected line kind; required for release-request.
+        required: false
+        type: choice
+        options:
+          - release
+          - support
+      ticket_key:
+        description: Ticket key for release-request.
+        required: false
+        type: string
+      ticket:
+        description: Ticket number for release-request.
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-control-${{ inputs.version || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  control:
+    name: Release control
+    permissions:
+      actions: write
+      contents: read
+      deployments: write
+      id-token: write
+    uses: t33n-software/git-governance/.github/workflows/reusable-release-control.yml@fdc47d35db4e082836d29a126aa168e736b42b3f
+    with:
+      operation: ${{ inputs.operation }}
+      version: ${{ inputs.version }}
+      kind: ${{ inputs.kind }}
+      ticket_key: ${{ inputs.ticket_key }}
+      ticket: ${{ inputs.ticket }}
+      delivery_variant: ${{ vars.GIT_GOVERNANCE_DELIVERY_VARIANT }}
+      verification_environment: release-credential-verification
+      request_environment: release-request
+      governance_repository: t33n-software/git-governance
