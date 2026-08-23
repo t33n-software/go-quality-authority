@@ -6,17 +6,33 @@ on:
       - main
     types:
       - closed
+  workflow_dispatch:
+    inputs:
+      release_branch:
+        description: Merged release/<semver> source branch of the controlled promotion.
+        required: true
+        type: string
+      merge_sha:
+        description: The pull-request merge commit of the controlled promotion into the main line.
+        required: true
+        type: string
 
 permissions: {}
 
 concurrency:
-  group: release-tag-${{ github.event.pull_request.number }}
+  group: release-tag-${{ github.event.pull_request.number || inputs.release_branch }}
   cancel-in-progress: false
 
 jobs:
-  tag:
-    name: Release tag
+  # Detection runs on the pull_request event without any environment binding: an
+  # environment-gated job must never execute on a pull_request run, because the
+  # run ref (refs/pull/<n>/merge) can never satisfy the delivery environment's
+  # deployment branch policy. Convention:
+  # docs/conventions/hosting-platforms/github/workflows/environment-gate-trigger-context.md
+  detect:
+    name: Detect merged release promotion
     if: >-
+      github.event_name == 'pull_request' &&
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -24,9 +40,36 @@ jobs:
       github.event.pull_request.merge_commit_sha != ''
     permissions:
       actions: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch the main-bound tag execution
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --request POST \
+            --url "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/tag-promoted-release.yml/dispatches" \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            --header "Content-Type: application/json" \
+            --data "{\"ref\":\"main\",\"inputs\":{\"release_branch\":\"${RELEASE_BRANCH}\",\"merge_sha\":\"${MERGE_SHA}\"}}"
+
+  # Execution runs only on the main-bound workflow_dispatch run, so the
+  # release-delivery environment admission (branch policy plus required
+  # reviewers) gates the immutable tag creation. Convention:
+  # docs/conventions/hosting-platforms/github/workflows/environment-gate-trigger-context.md
+  tag:
+    name: Release tag
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: write
       contents: write
     uses: t33n-software/git-governance/.github/workflows/reusable-tag-promoted-release.yml@3b0d034fc773b38dd13e3b13b24d1cbd7c2b0368
     with:
-      release_branch: ${{ github.event.pull_request.head.ref }}
-      merge_sha: ${{ github.event.pull_request.merge_commit_sha }}
+      release_branch: ${{ inputs.release_branch }}
+      merge_sha: ${{ inputs.merge_sha }}
       delivery_environment: release-delivery

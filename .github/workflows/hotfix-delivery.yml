@@ -24,22 +24,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Detection runs on the pull_request event without any environment binding: an
+  # environment-gated job must never execute on a pull_request run, because the
+  # run ref (refs/pull/<n>/merge) can never satisfy the delivery environment's
+  # deployment branch policy. Convention:
+  # docs/conventions/hosting-platforms/github/workflows/environment-gate-trigger-context.md
+  detect:
+    name: Detect merged hotfix promotion
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'hotfix/')
+    permissions:
+      actions: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch the main-bound hotfix delivery
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HOTFIX_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --request POST \
+            --url "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/hotfix-delivery.yml/dispatches" \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            --header "Content-Type: application/json" \
+            --data "{\"ref\":\"main\",\"inputs\":{\"hotfix_branch\":\"${HOTFIX_BRANCH}\"}}"
+
+  # Execution runs only on the main-bound workflow_dispatch run, so the
+  # hotfix-delivery environment admission (branch policy plus required
+  # reviewers) gates the patch delivery. Convention:
+  # docs/conventions/hosting-platforms/github/workflows/environment-gate-trigger-context.md
   deliver:
     name: Hotfix delivery
-    if: >-
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.merged == true &&
-       github.event.pull_request.base.ref == 'main' &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       startsWith(github.event.pull_request.head.ref, 'hotfix/')) ||
-      github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       actions: write
       contents: write
       id-token: write
     uses: t33n-software/git-governance/.github/workflows/reusable-hotfix-delivery.yml@3b0d034fc773b38dd13e3b13b24d1cbd7c2b0368
     with:
-      hotfix_branch: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || inputs.hotfix_branch }}
+      hotfix_branch: ${{ inputs.hotfix_branch }}
       record: ${{ inputs.record }}
       delivery_variant: ${{ vars.GIT_GOVERNANCE_DELIVERY_VARIANT }}
       delivery_environment: hotfix-delivery
