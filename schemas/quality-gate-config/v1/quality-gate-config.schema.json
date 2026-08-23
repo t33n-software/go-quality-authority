@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/t33n-software/go-quality-authority/main/schemas/quality-gate-config/v1/schema.json",
+  "$id": "https://raw.githubusercontent.com/t33n-software/go-quality-authority/main/schemas/quality-gate-config/v1/quality-gate-config.schema.json",
   "title": "Quality Gate Configuration",
   "description": "The canonical quality-gate configuration seam (git-governance.quality.json). Version 3 adds the controlled toolchain identity and the project data block to the gate contract. The schema is owned by the go-quality-authority home, strictly decoded, and proven by conformance vectors.",
   "type": "object",

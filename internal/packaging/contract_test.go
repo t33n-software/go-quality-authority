@@ -53,7 +53,7 @@ func listVectors(t *testing.T, lane string) []string {
 }
 
 func TestSchemaIsValidJSON(t *testing.T) {
-	contents := readArtifact(t, "schemas/quality-gate-config/v1/schema.json")
+	contents := readArtifact(t, "schemas/quality-gate-config/v1/quality-gate-config.schema.json")
 	var document map[string]any
 	if err := json.Unmarshal(contents, &document); err != nil {
 		t.Fatalf("the schema is not valid JSON: %v", err)
