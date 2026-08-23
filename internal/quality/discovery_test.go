@@ -298,10 +298,14 @@ func TestIgnoredDiscoveryDirectory(t *testing.T) {
 }
 
 func TestRelPathFallsBackOnError(t *testing.T) {
-	// An absolute base and a relative target cannot be related; this forces the
-	// fallback branch that keeps the file's own directory. The caller normalizes
-	// the result with filepath.ToSlash, so assert the OS-independent form.
-	got := filepath.ToSlash(relPath(`C:\gqa-root`, "internal/quality/config_test.go"))
+	// Force the fallback branch portably: an absolute base and a relative
+	// target cannot be related by filepath.Rel on any supported platform, so
+	// the error branch is taken on every operating system. The base must come
+	// from the runtime (t.TempDir()), never from a hardcoded OS-specific path
+	// form — a Windows drive-letter base is not absolute on Linux and would
+	// silently stop exercising the fallback there. Convention:
+	// docs/conventions/testing/portable-test-construction.md
+	got := filepath.ToSlash(relPath(t.TempDir(), "internal/quality/config_test.go"))
 	if got != "internal/quality" {
 		t.Fatalf("relPath fallback = %q", got)
 	}
