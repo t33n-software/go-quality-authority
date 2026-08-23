@@ -70,7 +70,7 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	github.com/t33n-software/git-governance v1.0.2-0.20260822155516-7b0749bdbd85 // indirect
+	github.com/t33n-software/git-governance v1.0.2-0.20260823095005-eb9df9c719b7 // indirect
 	github.com/tidwall/jsonc v0.3.3 // indirect
 	github.com/urfave/cli/v3 v3.10.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
