@@ -8,8 +8,9 @@ import (
 
 func validConfigJSON() string {
 	return `{
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
+  "extends": ["opentofu@1"],
   "defaults": { "includeFamilies": ["feature", "fix"] },
   "gates": [
     {
@@ -34,8 +35,11 @@ func TestDecodeConfigValid(t *testing.T) {
 	if config.SchemaVersion != SchemaVersion {
 		t.Fatalf("SchemaVersion = %d, want %d", config.SchemaVersion, SchemaVersion)
 	}
-	if config.Toolchain.GoVersion != "1.26.6" {
-		t.Fatalf("GoVersion = %q", config.Toolchain.GoVersion)
+	if config.Toolchain.Language != "go" || config.Toolchain.Version != "1.26.6" {
+		t.Fatalf("Toolchain = %+v", config.Toolchain)
+	}
+	if len(config.Extends) != 1 || config.Extends[0] != "opentofu@1" {
+		t.Fatalf("Extends = %+v", config.Extends)
 	}
 	if len(config.Gates) != 1 || config.Gates[0].Name != "full-local-build" {
 		t.Fatalf("Gates = %+v", config.Gates)
@@ -68,11 +72,7 @@ func TestDecodeConfigRejectsInvalidJSON(t *testing.T) {
 }
 
 func TestDecodeConfigRejectsUnknownField(t *testing.T) {
-	contents := strings.Replace(validConfigJSON(), `"gates"`, `"unknown"`, 1)
-	// keep gates present to isolate the unknown-field branch
-	contents = strings.Replace(contents, `"project"`, `"gates": [], "project"`, 1)
-	_ = contents
-	if _, err := DecodeConfig([]byte(`{"schemaVersion":3,"toolchain":{"goVersion":"1.26.6"},"gates":[{"name":"a","command":"go"}],"bogus":true}`)); err == nil {
+	if _, err := DecodeConfig([]byte(`{"schemaVersion":4,"toolchain":{"language":"go","version":"1.26.6"},"gates":[{"name":"a","command":"go"}],"bogus":true}`)); err == nil {
 		t.Fatal("expected an error for an unknown field")
 	}
 }
@@ -85,21 +85,82 @@ func TestDecodeConfigRejectsTrailingDocument(t *testing.T) {
 }
 
 func TestDecodeConfigRejectsWrongSchemaVersion(t *testing.T) {
-	// Both the legacy v2 and any future unsupported version are rejected: the
-	// decoder accepts exactly the canonical version.
-	for _, version := range []string{"2", "4"} {
-		contents := strings.Replace(validConfigJSON(), `"schemaVersion": 3`, `"schemaVersion": `+version, 1)
+	// Both the previous v3 form and any future unsupported version are
+	// rejected: the decoder accepts exactly the canonical version.
+	for _, version := range []string{"3", "5"} {
+		contents := strings.Replace(validConfigJSON(), `"schemaVersion": 4`, `"schemaVersion": `+version, 1)
 		if _, err := DecodeConfig([]byte(contents)); err == nil {
 			t.Fatalf("expected an error for schemaVersion %s", version)
 		}
 	}
 }
 
-func TestDecodeConfigRejectsInvalidGoVersion(t *testing.T) {
-	contents := strings.Replace(validConfigJSON(), `"goVersion": "1.26.6"`, `"goVersion": "latest"`, 1)
-	if _, err := DecodeConfig([]byte(contents)); err == nil {
-		t.Fatal("expected an error for an invalid goVersion")
+func TestDecodeConfigRejectsThePreviousWireForm(t *testing.T) {
+	// The v3 toolchain field is an unknown field under the v4 wire form.
+	if _, err := DecodeConfig([]byte(`{"schemaVersion":4,"toolchain":{"goVersion":"1.26.6"},"gates":[{"name":"a","command":"go"}]}`)); err == nil {
+		t.Fatal("expected an error for the v3 toolchain wire form")
 	}
+}
+
+func TestDecodeConfigRejectsInvalidToolchainLanguage(t *testing.T) {
+	contents := strings.Replace(validConfigJSON(), `"language": "go"`, `"language": "Go"`, 1)
+	if _, err := DecodeConfig([]byte(contents)); err == nil {
+		t.Fatal("expected an error for an invalid toolchain language")
+	}
+}
+
+func TestDecodeConfigRejectsInvalidToolchainVersion(t *testing.T) {
+	contents := strings.Replace(validConfigJSON(), `"version": "1.26.6"`, `"version": "latest"`, 1)
+	if _, err := DecodeConfig([]byte(contents)); err == nil {
+		t.Fatal("expected an error for an invalid toolchain version")
+	}
+}
+
+func TestDecodeConfigValidatesExtends(t *testing.T) {
+	t.Run("absent and empty declarations are valid", func(t *testing.T) {
+		for _, contents := range []string{
+			`{"schemaVersion":4,"toolchain":{"language":"go","version":"1.26.6"},"gates":[{"name":"a","command":"go"}]}`,
+			`{"schemaVersion":4,"toolchain":{"language":"go","version":"1.26.6"},"extends":[],"gates":[{"name":"a","command":"go"}]}`,
+		} {
+			if _, err := DecodeConfig([]byte(contents)); err != nil {
+				t.Fatalf("DecodeConfig rejected a valid declaration: %v", err)
+			}
+		}
+	})
+
+	tests := []struct {
+		name    string
+		extends string
+		wantErr string
+	}{
+		{name: "missing major version", extends: `["opentofu"]`, wantErr: "<capability>@<major>"},
+		{name: "unpinned major version", extends: `["opentofu@latest"]`, wantErr: "<capability>@<major>"},
+		{name: "uppercase capability", extends: `["OpenTofu@1"]`, wantErr: "<capability>@<major>"},
+		{name: "duplicate reference", extends: `["opentofu@1","opentofu@1"]`, wantErr: "unique"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			contents := strings.Replace(validConfigJSON(), `"extends": ["opentofu@1"]`, `"extends": `+test.extends, 1)
+			_, err := DecodeConfig([]byte(contents))
+			if err == nil {
+				t.Fatalf("expected an error containing %q", test.wantErr)
+			}
+			if !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), test.wantErr)
+			}
+		})
+	}
+
+	t.Run("too many references", func(t *testing.T) {
+		references := make([]string, 0, maxExtendsCount+1)
+		for index := 0; index <= maxExtendsCount; index++ {
+			references = append(references, `"capability-`+strings.Repeat("x", index+1)+`@1"`)
+		}
+		contents := strings.Replace(validConfigJSON(), `"extends": ["opentofu@1"]`, `"extends": [`+strings.Join(references, ",")+`]`, 1)
+		if _, err := DecodeConfig([]byte(contents)); err == nil {
+			t.Fatal("expected an error for too many extends references")
+		}
+	})
 }
 
 func TestDecodeConfigRejectsEmptyGates(t *testing.T) {
@@ -254,8 +315,8 @@ func TestFuzzTime(t *testing.T) {
 func configWithGates(t *testing.T, gates string) string {
 	t.Helper()
 	return `{
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
   "gates": [` + gates + `]
 }`
 }
@@ -304,8 +365,8 @@ func TestDecodeConfigScopeBranches(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			contents := `{
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
   "defaults": { ` + test.scope + ` },
   "gates": [{"name":"a","command":"go"}]
 }`
@@ -321,8 +382,8 @@ func TestDecodeConfigScopeBranches(t *testing.T) {
 func TestDecodeConfigProjectBranches(t *testing.T) {
 	base := func(project string) string {
 		return `{
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
   "gates": [{"name":"a","command":"go"}],
   "project": ` + project + `
 }`

@@ -15,8 +15,8 @@ import (
 func writeConfig(t *testing.T, dir string) {
 	t.Helper()
 	contents := `{
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
   "gates": [{"name":"full-local-build","command":"go","args":["version"]}]
 }`
 	if err := os.WriteFile(filepath.Join(dir, configFileName), []byte(contents), 0o644); err != nil {
@@ -111,7 +111,7 @@ func TestRunQualityGateDelegation(t *testing.T) {
 func testConfigForMain() quality.Config {
 	return quality.Config{
 		SchemaVersion: quality.SchemaVersion,
-		Toolchain:     quality.Toolchain{GoVersion: "1.26.6"},
+		Toolchain:     quality.Toolchain{Language: "go", Version: "1.26.6"},
 		Gates:         []quality.Gate{{Name: "full-local-build", Command: "go"}},
 	}
 }

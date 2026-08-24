@@ -22,7 +22,7 @@ type recordedCall struct {
 func testConfig() Config {
 	return Config{
 		SchemaVersion: SchemaVersion,
-		Toolchain:     Toolchain{GoVersion: "1.26.6"},
+		Toolchain:     Toolchain{Language: "go", Version: "1.26.6"},
 		Gates:         []Gate{{Name: "full-local-build", Command: "go"}},
 	}
 }
@@ -129,11 +129,11 @@ func TestOrchestratorPlanWithoutToolsMod(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 	toolsSteps := map[string]bool{
-		"download tool dependencies":  true,
-		"verify tool dependencies":    true,
-		"verify tool metadata":        true,
-		"run lint":                    true,
-		"run vulnerability analysis":  true,
+		"download tool dependencies":      true,
+		"verify tool dependencies":        true,
+		"verify tool metadata":            true,
+		"run lint":                        true,
+		"run vulnerability analysis":      true,
 		"validate Lefthook configuration": true,
 	}
 	for _, step := range steps {
@@ -195,18 +195,29 @@ func TestOrchestratorVerifyToolchain(t *testing.T) {
 	if err := o.verifyToolchain(context.Background(), "."); err != nil {
 		t.Fatalf("verifyToolchain: %v", err)
 	}
-	o.Config.Toolchain.GoVersion = "go1.26.6"
-	if err := o.verifyToolchain(context.Background(), "."); err != nil {
-		t.Fatalf("verifyToolchain with go prefix: %v", err)
+	o.Config.Toolchain.Language = "rust"
+	if err := o.verifyToolchain(context.Background(), "."); err == nil {
+		t.Fatal("expected the non-Go toolchain rejection")
 	}
-	o.Config.Toolchain.GoVersion = "1.25.0"
+	o.Config.Toolchain.Language = "go"
+	o.Config.Toolchain.Version = "1.25.0"
 	if err := o.verifyToolchain(context.Background(), "."); err == nil {
 		t.Fatal("expected a toolchain mismatch error")
 	}
 	o.GoVersion = func(context.Context, string) (string, error) { return "", errors.New("boom") }
-	o.Config.Toolchain.GoVersion = "1.26.6"
+	o.Config.Toolchain.Version = "1.26.6"
 	if err := o.verifyToolchain(context.Background(), "."); err == nil {
 		t.Fatal("expected the toolchain read error")
+	}
+}
+
+func TestOrchestratorPlanRejectsDeclaredPacks(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	o.Config.Extends = []string{"opentofu@1"}
+	if _, err := o.Plan("."); err == nil {
+		t.Fatal("expected the declared-pack fail-closed error")
+	} else if !strings.Contains(err.Error(), "no pack registry is bound") {
+		t.Fatalf("Plan error = %q, want the registry binding failure", err)
 	}
 }
 

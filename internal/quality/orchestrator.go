@@ -78,6 +78,12 @@ func (o Orchestrator) Plan(root string) ([]Step, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("a repository root is required for the quality gate")
 	}
+	// A declared pack is resolved against the registry during provisioning.
+	// Until the registry is bound in this orchestrator, every declaration is
+	// unknown and therefore a fail-closed finding, never a silent skip.
+	if len(o.Config.Extends) > 0 {
+		return nil, fmt.Errorf("capability packs are declared (%s), but no pack registry is bound in this orchestrator version", strings.Join(o.Config.Extends, ", "))
+	}
 	binaries, err := o.Discover.DiscoverBinaries(root)
 	if err != nil {
 		return nil, fmt.Errorf("discover command binaries: %w", err)
@@ -151,14 +157,17 @@ func (o Orchestrator) runStep(ctx context.Context, root string, step Step) error
 }
 
 // verifyToolchain asserts that the running toolchain matches the pinned
-// configuration identity.
+// language-keyed configuration identity.
 func (o Orchestrator) verifyToolchain(ctx context.Context, dir string) error {
+	if o.Config.Toolchain.Language != "go" {
+		return fmt.Errorf("the Go territory orchestrator cannot assert the %q toolchain", o.Config.Toolchain.Language)
+	}
 	version, err := o.GoVersion(ctx, dir)
 	if err != nil {
 		return fmt.Errorf("read the controlled toolchain: %w", err)
 	}
-	if strings.TrimPrefix(version, "go") != strings.TrimPrefix(o.Config.Toolchain.GoVersion, "go") {
-		return fmt.Errorf("controlled toolchain mismatch: running %s, pinned %s", version, o.Config.Toolchain.GoVersion)
+	if strings.TrimPrefix(version, "go") != o.Config.Toolchain.Version {
+		return fmt.Errorf("controlled toolchain mismatch: running %s, pinned go%s", version, o.Config.Toolchain.Version)
 	}
 	return nil
 }
