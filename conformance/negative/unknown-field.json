@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
   "gates": [{ "name": "full-local-build", "command": "go" }],
   "bogus": true
 }

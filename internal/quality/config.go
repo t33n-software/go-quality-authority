@@ -19,9 +19,16 @@ import (
 )
 
 // SchemaVersion is the canonical quality-gate configuration schema version
-// published by this home. Version 3 adds the toolchain identity and the
-// project data block to the gate contract.
-const SchemaVersion = 3
+// published by this home. Version 4 moves the seam definition into the
+// supply-chain-governance shared kernel: the toolchain identity becomes
+// language-keyed and tenants declare capability packs through extends.
+const SchemaVersion = 4
+
+// SchemaID is the canonical schema identity of the configuration seam. From
+// version 4 the seam definition lives exactly once in the
+// supply-chain-governance shared kernel; this home references it by identity
+// and never carries a copy.
+const SchemaID = "quality-gate-config/v4"
 
 const (
 	maxConfigBytes   = 1 << 20
@@ -30,29 +37,36 @@ const (
 	maxBinaryCount   = 32
 	maxFuzzCount     = 64
 	maxSmokeCount    = 16
+	maxExtendsCount  = 32
 
 	defaultGateTimeout = 5 * time.Minute
 )
 
 var (
-	gateNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-	fuzzNamePattern  = regexp.MustCompile(`^Fuzz[A-Za-z0-9_]*$`)
-	goVersionPattern = regexp.MustCompile(`^(go)?[0-9]+\.[0-9]+(\.[0-9]+)?$`)
-	packagePattern   = regexp.MustCompile(`^\.?/[A-Za-z0-9_./-]+$`)
+	gateNamePattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	fuzzNamePattern      = regexp.MustCompile(`^Fuzz[A-Za-z0-9_]*$`)
+	languagePattern      = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	versionPattern       = regexp.MustCompile(`^[0-9]+\.[0-9]+(\.[0-9]+)?$`)
+	packReferencePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*@[0-9]+$`)
+	packagePattern       = regexp.MustCompile(`^\.?/[A-Za-z0-9_./-]+$`)
 )
 
 // Config is the canonical quality-gate configuration seam.
 type Config struct {
 	SchemaVersion int
 	Toolchain     Toolchain
+	Extends       []string
 	Defaults      Scope
 	Gates         []Gate
 	Project       Project
 }
 
-// Toolchain binds the controlled Go toolchain identity as tenant data.
+// Toolchain binds the controlled toolchain identity as language-keyed tenant
+// data: the same seam form serves every language territory without a schema
+// fork.
 type Toolchain struct {
-	GoVersion string
+	Language string
+	Version  string
 }
 
 // Scope selects the branch families a gate set applies to.
@@ -94,15 +108,17 @@ type FuzzTarget struct {
 // configDocument is the wire form of the configuration seam. Unknown fields
 // are rejected at decode time.
 type configDocument struct {
-	SchemaVersion int            `json:"schemaVersion"`
-	Toolchain     toolchainJSON  `json:"toolchain"`
-	Defaults      scopeJSON      `json:"defaults"`
-	Gates         []gateJSON     `json:"gates"`
-	Project       projectJSON    `json:"project"`
+	SchemaVersion int           `json:"schemaVersion"`
+	Toolchain     toolchainJSON `json:"toolchain"`
+	Extends       []string      `json:"extends"`
+	Defaults      scopeJSON     `json:"defaults"`
+	Gates         []gateJSON    `json:"gates"`
+	Project       projectJSON   `json:"project"`
 }
 
 type toolchainJSON struct {
-	GoVersion string `json:"goVersion"`
+	Language string `json:"language"`
+	Version  string `json:"version"`
 }
 
 type scopeJSON struct {
@@ -163,8 +179,14 @@ func validateDocument(document configDocument) (Config, error) {
 	if document.SchemaVersion != SchemaVersion {
 		return Config{}, fmt.Errorf("schemaVersion must equal %d", SchemaVersion)
 	}
-	if !goVersionPattern.MatchString(document.Toolchain.GoVersion) {
-		return Config{}, fmt.Errorf("toolchain.goVersion must be a pinned Go version such as 1.26.6")
+	if !languagePattern.MatchString(document.Toolchain.Language) {
+		return Config{}, fmt.Errorf("toolchain.language must be a lowercase language identifier such as go")
+	}
+	if !versionPattern.MatchString(document.Toolchain.Version) {
+		return Config{}, fmt.Errorf("toolchain.version must be a pinned version such as 1.26.6")
+	}
+	if err := validateExtends(document.Extends); err != nil {
+		return Config{}, err
 	}
 	if len(document.Gates) == 0 || len(document.Gates) > maxGateCount {
 		return Config{}, fmt.Errorf("gates must contain between 1 and %d entries", maxGateCount)
@@ -175,7 +197,11 @@ func validateDocument(document configDocument) (Config, error) {
 
 	config := Config{
 		SchemaVersion: document.SchemaVersion,
-		Toolchain:     Toolchain{GoVersion: document.Toolchain.GoVersion},
+		Toolchain: Toolchain{
+			Language: document.Toolchain.Language,
+			Version:  document.Toolchain.Version,
+		},
+		Extends: document.Extends,
 		Defaults: Scope{
 			IncludeFamilies: document.Defaults.IncludeFamilies,
 			ExcludeFamilies: document.Defaults.ExcludeFamilies,
@@ -239,6 +265,26 @@ func validateGate(gate gateJSON, seen map[string]struct{}) error {
 
 func convertGate(gate gateJSON) Gate {
 	return Gate(gate)
+}
+
+// validateExtends checks the capability pack declaration form. The decoder
+// validates the reference grammar only; resolving a pack against the registry
+// is the orchestrator's provisioning responsibility.
+func validateExtends(references []string) error {
+	if len(references) > maxExtendsCount {
+		return fmt.Errorf("extends must contain at most %d capability pack references", maxExtendsCount)
+	}
+	seen := make(map[string]struct{}, len(references))
+	for _, reference := range references {
+		if !packReferencePattern.MatchString(reference) {
+			return fmt.Errorf("extends entries must use the <capability>@<major> form such as opentofu@1: %q", reference)
+		}
+		if _, found := seen[reference]; found {
+			return fmt.Errorf("extends entries must be unique: %q", reference)
+		}
+		seen[reference] = struct{}{}
+	}
+	return nil
 }
 
 func validateScope(label string, scope scopeJSON) error {

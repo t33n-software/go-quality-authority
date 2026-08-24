@@ -18,7 +18,9 @@ go run -mod=readonly ./cmd/quality-gate
 The canonical gate set, in order:
 
 1. **Controlled toolchain** — the running `go env GOVERSION` must equal the
-   pinned `toolchain.goVersion` of the configuration seam.
+   pinned `toolchain.version` of the configuration seam, and the seam's
+   `toolchain.language` must be `go`; a declared capability pack
+   (`extends`) fails closed until its registry is bound.
 2. **Module verification** — `go mod download`, `go mod verify`,
    `go mod tidy -diff` for the module and, when present, the `tools` module.
    The orchestrator never mutates `go.mod` or `go.sum`; the module graph is a
@@ -57,8 +59,10 @@ executable Go package must reach exactly 100.0 percent statement coverage.
 The configuration seam is proven by the conformance vectors:
 `conformance/positive/` documents decode successfully and
 `conformance/negative/` are each rejected with a precise field error. The
-contract test in `internal/packaging` binds the schema, the vectors, and the
-tool catalog to the quality core.
+seam definition (`quality-gate-config/v4`) is owned by the
+supply-chain-governance shared kernel and referenced by identity; the
+contract test in `internal/packaging` binds the canonical identity, the
+vectors, and the tool catalog to the quality core.
 
 ## Whitebox testing
 

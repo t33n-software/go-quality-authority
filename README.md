@@ -3,8 +3,11 @@
 `go-quality-authority` is the canonical Go territory home for the shared
 quality tooling of the fleet. It owns the producer side of the quality
 contract: the `quality-gate` orchestrator, the `check-coverage` 100-percent
-statement-coverage gate, the canonical `git-governance.quality.json`
-configuration schema, and the canonical Go tool catalog.
+statement-coverage gate, and the canonical Go tool catalog. The
+`git-governance.quality.json` configuration seam is owned by the
+supply-chain-governance shared kernel from schema version 4; this home
+references it by identity (`quality-gate-config/v4`) and never carries a
+schema copy.
 
 ## Artifacts
 
@@ -12,7 +15,7 @@ configuration schema, and the canonical Go tool catalog.
 |---|---|---|
 | Quality-gate orchestrator | `cmd/quality-gate/` | Reads the schema-validated config seam, asserts the controlled toolchain, executes the canonical gate set, and discovers command binaries and fuzz targets by convention |
 | Coverage gate | `cmd/check-coverage/` | Enforces test-source presence and exact 100-percent statement coverage for every executable Go package |
-| Config schema | `schemas/quality-gate-config/v1/quality-gate-config.schema.json` | The versioned, strictly decoded, named-owner configuration seam (schema version 3) |
+| Config seam | `quality-gate-config/v4` in `supply-chain-governance` | The centralized, versioned, strictly decoded configuration seam definition, referenced by identity |
 | Tool catalog | `catalog/tools.json` | The canonical set of admitted Go tools consumed as `tool` directives |
 | Conformance vectors | `conformance/{positive,negative}/` | The proof set for the configuration seam: every acceptance and every rejection |
 
@@ -37,16 +40,21 @@ go get -tool github.com/t33n-software/go-quality-authority/cmd/quality-gate@v1.0
 ## The configuration seam
 
 `git-governance.quality.json` is the typed seam between the fleet and the
-tenant. The schema is versioned (`v<major>`), owned by this home, strictly
-decoded, and proven by the conformance vectors. The canonical gate set is
-fleet-identical; the `project` block is data and shrinks to named exceptions,
-because the orchestrator discovers `./cmd/*` binaries and convention-placed
-fuzz targets without configuration.
+tenant. The schema is versioned (`v<major>`), owned by the
+supply-chain-governance shared kernel from version 4, strictly decoded by
+this home, and proven by the conformance vectors. The toolchain identity is
+language-keyed (`language` plus `version`), and the optional `extends` list
+declares capability pack references in the `<capability>@<major>` form; a
+declared pack fails closed until its registry is bound. The canonical gate
+set is fleet-identical; the `project` block is data and shrinks to named
+exceptions, because the orchestrator discovers `./cmd/*` binaries and
+convention-placed fuzz targets without configuration.
 
 ```json
 {
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
+  "extends": [],
   "defaults": { "includeFamilies": ["feature", "fix", "docs", "refactor", "chore", "test", "perf", "hotfix"] },
   "gates": [
     {

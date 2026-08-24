@@ -52,17 +52,22 @@ func listVectors(t *testing.T, lane string) []string {
 	return names
 }
 
-func TestSchemaIsValidJSON(t *testing.T) {
-	contents := readArtifact(t, "schemas/quality-gate-config/v1/quality-gate-config.schema.json")
-	var document map[string]any
-	if err := json.Unmarshal(contents, &document); err != nil {
-		t.Fatalf("the schema is not valid JSON: %v", err)
+func TestConfigSeamIsReferencedByCanonicalIdentity(t *testing.T) {
+	// The seam definition lives exactly once in the supply-chain-governance
+	// shared kernel from version 4; this home references it by identity and
+	// never carries a schema copy.
+	if quality.SchemaID != "quality-gate-config/v4" {
+		t.Fatalf("SchemaID = %q, want the centralized v4 identity", quality.SchemaID)
 	}
-	if document["$id"] == "" {
-		t.Fatal("the schema must carry a canonical $id")
+	if quality.SchemaVersion != 4 {
+		t.Fatalf("SchemaVersion = %d, want 4", quality.SchemaVersion)
 	}
-	if document["additionalProperties"] != false {
-		t.Fatal("the schema must reject unknown properties")
+	readme := string(readArtifact(t, "README.md"))
+	if !strings.Contains(readme, "supply-chain-governance") || !strings.Contains(readme, "quality-gate-config/v4") {
+		t.Fatal("the README must reference the centralized seam definition in the shared kernel")
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot(t), "schemas", "quality-gate-config")); !os.IsNotExist(err) {
+		t.Fatal("the local schema copy must not exist; the seam is owned by the shared kernel")
 	}
 }
 

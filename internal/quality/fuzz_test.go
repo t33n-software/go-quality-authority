@@ -6,6 +6,7 @@ import "testing"
 // decoder must never panic and must fail closed on any malformed input.
 func FuzzDecodeConfig(f *testing.F) {
 	f.Add([]byte(validConfigJSON()))
+	f.Add([]byte(`{"schemaVersion":4,"toolchain":{"language":"go","version":"1.26.6"},"extends":["opentofu@1"],"gates":[{"name":"a","command":"go"}]}`))
 	f.Add([]byte(`{"schemaVersion":3,"toolchain":{"goVersion":"1.26.6"},"gates":[{"name":"a","command":"go"}]}`))
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`not json`))
