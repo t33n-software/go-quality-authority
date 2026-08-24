@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
+  "extends": [],
   "defaults": {
     "includeFamilies": ["feature", "fix", "docs", "refactor", "chore", "test", "perf", "hotfix"]
   },
