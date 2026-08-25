@@ -13,7 +13,7 @@ schema copy.
 
 | Artifact | Path | Role |
 |---|---|---|
-| Quality-gate orchestrator | `cmd/quality-gate/` | Reads the schema-validated config seam, asserts the controlled toolchain, executes the canonical gate set, and discovers command binaries and fuzz targets by convention |
+| Quality-gate orchestrator | `cmd/quality-gate/` | Reads the schema-validated config seam, asserts the controlled toolchain, executes the canonical gate set, resolves and provisions the declared capability packs, and discovers command binaries and fuzz targets by convention |
 | Coverage gate | `cmd/check-coverage/` | Enforces test-source presence and exact 100-percent statement coverage for every executable Go package |
 | Config seam | `quality-gate-config/v4` in `supply-chain-governance` | The centralized, versioned, strictly decoded configuration seam definition, referenced by identity |
 | Tool catalog | `catalog/tools.json` | The canonical set of admitted Go tools consumed as `tool` directives |
@@ -44,11 +44,39 @@ tenant. The schema is versioned (`v<major>`), owned by the
 supply-chain-governance shared kernel from version 4, strictly decoded by
 this home, and proven by the conformance vectors. The toolchain identity is
 language-keyed (`language` plus `version`), and the optional `extends` list
-declares capability pack references in the `<capability>@<major>` form; a
-declared pack fails closed until its registry is bound. The canonical gate
-set is fleet-identical; the `project` block is data and shrinks to named
-exceptions, because the orchestrator discovers `./cmd/*` binaries and
+declares capability pack references in the `<capability>@<major>` form. The
+canonical gate set is fleet-identical; the `project` block is data and shrinks
+to named exceptions, because the orchestrator discovers `./cmd/*` binaries and
 convention-placed fuzz targets without configuration.
+
+## Capability packs
+
+A capability pack is a versioned, schema-bound unit of shared gate behavior
+that a tenant declares through the `extends` list. The pack registry lives in
+the owning home: language-neutral packs (such as `opentofu`) in the
+`supply-chain-governance` shared kernel, language-bound packs in this
+territory's `capabilities/` area. The orchestrator resolves every declared
+reference against the union of both registries at the tenant's pinned tool
+stand — a declared but unknown reference is a fail-closed finding, never a
+silent skip — and composes the gate order deterministically: the core gates,
+then the pack gates, then the project gates. A pack's assertions run before
+any of its gates.
+
+The `provision` mode executes each declared pack's recipe: it downloads the
+bound artifact for the runner platform, verifies the bound `sha256` digest
+fail-closed, verifies the cosign signature where the descriptor binds one
+(against the publisher's OIDC-bound release-workflow identity), and installs
+the tool into the pack tool cache. The reusable CI payload runs it before the
+gate, so the payload stays a constant-size shell that never grows per
+capability:
+
+```bash
+go tool -modfile tools/go.mod quality-gate provision
+go tool -modfile tools/go.mod quality-gate
+```
+
+The pack model is owned by the capability-pack contract; this home owns the
+orchestrator machinery.
 
 ```json
 {

@@ -19,8 +19,9 @@ The canonical gate set, in order:
 
 1. **Controlled toolchain** — the running `go env GOVERSION` must equal the
    pinned `toolchain.version` of the configuration seam, and the seam's
-   `toolchain.language` must be `go`; a declared capability pack
-   (`extends`) fails closed until its registry is bound.
+   `toolchain.language` must be `go`; a declared capability pack (`extends`)
+   is resolved against the pack registry union and fails closed when the
+   reference is unknown.
 2. **Module verification** — `go mod download`, `go mod verify`,
    `go mod tidy -diff` for the module and, when present, the `tools` module.
    The orchestrator never mutates `go.mod` or `go.sum`; the module graph is a
@@ -63,6 +64,49 @@ seam definition (`quality-gate-config/v4`) is owned by the
 supply-chain-governance shared kernel and referenced by identity; the
 contract test in `internal/packaging` binds the canonical identity, the
 vectors, and the tool catalog to the quality core.
+
+## Capability pack machinery
+
+The orchestrator owns the pack machinery (the pack model is owned by the
+capability-pack contract in the shared kernel). Every surface is fail-closed
+and covered by same-package whitebox tests:
+
+1. **Descriptor decoding** — `internal/quality/pack.go` strictly decodes the
+   `capability-pack/v1` descriptor (unknown fields, trailing documents,
+   credential-like content, and every invariant violation are rejected with a
+   precise field error); the boundary fuzz lane is `FuzzDecodePackDescriptor`.
+2. **Registry resolution** — `internal/quality/packengine.go` resolves every
+   `extends` reference against the union of the territory registry (this
+   home's `capabilities/`) and the shared-kernel registry at the tenant's
+   pinned tool stand. The registry modules are resolved through the tenant's
+   integrity-pinned tooling channel (`tools/go.mod` + `tools/go.sum`), and the
+   resolution never trusts a warm module cache: it downloads the module before
+   querying its directory, so it runs identically on a cold CI runner. A home
+   resolves its own registry from the working tree. The resolution has exactly
+   three outcomes: declared and known is provisioned and executed, declared
+   but unknown fails closed (naming the searched and unavailable registries),
+   and not declared is skipped. A descriptor whose identity does not match its
+   registry location, and a reference carried by more than one registry, fail
+   closed.
+3. **Provisioning** — the `provision` mode (`internal/quality/provision.go`)
+   executes each declared pack's recipe: it downloads the bound artifact for
+   the runner platform over HTTPS with a byte bound, verifies the bound
+   `sha256` digest fail-closed, verifies the cosign signature where the
+   descriptor binds one (the certificate is the cosign keyless `.sig`/`.pem`
+   pair, and the certificate identity is the publisher's OIDC-bound
+   release-workflow identity bound by the engine reference), and installs the
+   tool into the pack tool cache with a bounded decompression read. The
+   extraction never derives an output location from the archive, and only the
+   regular file carrying the tool is extracted. A pack whose tool is not
+   provisioned fails the gate closed with the remediation
+   `quality-gate provision`.
+4. **Composition** — the plan composes deterministically: the core gates,
+   then the pack gates, then the project gates. A pack's assertions run before
+   any of its gates, a repository gate runs once at the root, and a per-root
+   gate runs once per discovered root (the parent directories of the
+   discovery glob's matches, minus the excluded directory names). Every pack
+   command references the provisioned tool, and the pack's enforced
+   environment reaches the gate processes.
 
 ## Whitebox testing
 
