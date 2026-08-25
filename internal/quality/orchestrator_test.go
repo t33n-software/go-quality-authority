@@ -229,6 +229,57 @@ func TestOrchestratorVerifyToolchain(t *testing.T) {
 	}
 }
 
+func TestOrchestratorVerifyFormatting(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("cmd/tool/main.go", "package main\n")
+	o, _ := fakeOrchestrator(fs)
+	step := Step{Name: "check Go formatting", Executable: "gofmt", Args: []string{"-l", "main.go"}}
+
+	// The regression guard: drift reported on the output stream with a zero
+	// exit code must fail the gate — the defect was the exit-code-only
+	// evaluation.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return []byte("main.go\n"), nil
+	}
+	if err := o.runStep(context.Background(), ".", step); err == nil {
+		t.Fatal("expected the format drift finding")
+	} else if !strings.Contains(err.Error(), "main.go") {
+		t.Fatalf("the finding must name the drifted file: %q", err)
+	}
+
+	// A clean tree passes, and the proof runs the step's own gofmt invocation
+	// through the output-capture seam.
+	var got []string
+	o.ExecuteOutput = func(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		got = append([]string{executable}, args...)
+		return []byte(""), nil
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep format proof: %v", err)
+	}
+	if strings.Join(got, " ") != "gofmt -l main.go" {
+		t.Fatalf("the proof must run the step's own invocation, got %q", got)
+	}
+
+	// Whitespace-only output is a pass.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return []byte(" \n"), nil
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep format proof with whitespace output: %v", err)
+	}
+
+	// The process error propagates wrapped.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return nil, errors.New("boom")
+	}
+	if err := o.runStep(context.Background(), ".", step); err == nil {
+		t.Fatal("expected the format execution error")
+	} else if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
 func TestOrchestratorPlanResolvesDeclaredPacks(t *testing.T) {
 	fs := newVirtualFS()
 	fs.addFile("cmd/tool/main.go", "package main\n")

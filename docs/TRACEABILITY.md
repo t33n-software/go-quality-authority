@@ -22,7 +22,7 @@ does not rely on any external governance repository or unpublished rule set.
 
 | Capability | Status | Verification |
 |---|---|---|
-| Quality-gate orchestrator | VERIFIED | `cmd/quality-gate` reads the schema-validated config seam, asserts the controlled toolchain, runs the canonical gate set, and applies convention discovery; same-package whitebox tests |
+| Quality-gate orchestrator | VERIFIED | `cmd/quality-gate` reads the schema-validated config seam, asserts the controlled toolchain, runs the canonical gate set, and applies convention discovery; the format gate is a fail-closed proof — the controlled toolchain's `gofmt -l` is evaluated through the output-capture seam and every listed file is a finding (the regression guard proves a drifted source fails the gate); same-package whitebox tests |
 | Coverage gate | VERIFIED | `cmd/check-coverage` enforces test-source presence and exact 100.0-percent statement coverage; same-package whitebox tests |
 | Configuration seam schema | VERIFIED | the seam definition (`quality-gate-config/v4`) is owned by the supply-chain-governance shared kernel and referenced by identity (`quality.SchemaID`); the v4 decoder strictly decodes the language-keyed toolchain and the `extends` declaration; conformance vectors prove every acceptance and rejection |
 | Tool catalog | VERIFIED | `catalog/tools.json` carries the canonical admitted Go tools; contract test |

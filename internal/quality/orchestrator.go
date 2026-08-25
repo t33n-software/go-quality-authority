@@ -198,6 +198,9 @@ func (o Orchestrator) runStep(ctx context.Context, root string, step Step) error
 	if step.Name == "verify controlled toolchain" {
 		return o.verifyToolchain(stepCtx, dir)
 	}
+	if step.Name == "check Go formatting" {
+		return o.verifyFormatting(stepCtx, dir, step.Args)
+	}
 	if step.Expect != "" {
 		output, err := o.ExecuteOutput(stepCtx, dir, step.Executable, step.Args, step.Env)
 		if err != nil {
@@ -226,6 +229,22 @@ func (o Orchestrator) verifyToolchain(ctx context.Context, dir string) error {
 	}
 	if strings.TrimPrefix(version, "go") != o.Config.Toolchain.Version {
 		return fmt.Errorf("controlled toolchain mismatch: running %s, pinned go%s", version, o.Config.Toolchain.Version)
+	}
+	return nil
+}
+
+// verifyFormatting is the fail-closed format proof: the controlled
+// toolchain's gofmt stays the measurement authority, and every listed file is
+// a finding. The proof evaluates the step's own gofmt invocation through the
+// output-capture seam — gofmt -l reports drift on its output stream and exits
+// zero either way, so an exit-code-only evaluation could never fail.
+func (o Orchestrator) verifyFormatting(ctx context.Context, dir string, args []string) error {
+	output, err := o.ExecuteOutput(ctx, dir, "gofmt", args, nil)
+	if err != nil {
+		return fmt.Errorf("check Go formatting: %w", err)
+	}
+	if drifted := strings.TrimSpace(string(output)); drifted != "" {
+		return fmt.Errorf("check Go formatting: files diverge from the governed format:\n%s", drifted)
 	}
 	return nil
 }
