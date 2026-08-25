@@ -15,3 +15,17 @@ func FuzzDecodeConfig(f *testing.F) {
 		_, _ = DecodeConfig(data)
 	})
 }
+
+// FuzzDecodePackDescriptor is the boundary-fuzz lane for the capability pack
+// descriptor decoder: the decoder must never panic and must fail closed on
+// any malformed input.
+func FuzzDecodePackDescriptor(f *testing.F) {
+	f.Add([]byte(validPackJSON()))
+	f.Add([]byte(`{"schema":"capability-pack/v2"}`))
+	f.Add([]byte(`{}`))
+	f.Add([]byte(`not json`))
+	f.Add([]byte(``))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = DecodePackDescriptor(data)
+	})
+}
