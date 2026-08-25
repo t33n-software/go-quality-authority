@@ -15,31 +15,44 @@ import (
 	"time"
 )
 
-// Step is one quality-gate command in the canonical plan.
+// Step is one quality-gate command in the canonical plan. A step with a
+// non-empty Expect is a fail-closed assertion: its combined output must carry
+// the expected proof text. Env carries the enforced environment of a pack
+// step; a nil Env inherits the process environment unchanged.
 type Step struct {
 	Name       string
 	Dir        string
 	Executable string
 	Args       []string
+	Env        []string
+	Expect     string
 	Timeout    time.Duration
 }
 
 // Orchestrator runs the canonical quality gate set for a tenant repository.
 // It reads the schema-validated configuration seam, asserts the controlled
-// toolchain, executes the canonical gates, and applies convention discovery
-// for command binaries and fuzz targets. It never mutates go.mod or go.sum.
+// toolchain, executes the canonical gates, resolves and provisions the
+// declared capability packs, and applies convention discovery for command
+// binaries and fuzz targets. It never mutates go.mod or go.sum.
 type Orchestrator struct {
-	Config    Config
-	Discover  Discoverer
-	Coverage  CoverageRunner
-	Execute   func(ctx context.Context, dir, executable string, args ...string) error
-	GoVersion func(ctx context.Context, dir string) (string, error)
-	Stdout    io.Writer
-	Stderr    io.Writer
+	Config   Config
+	Discover Discoverer
+	Coverage CoverageRunner
+	// Execute runs a plan step without capturing its output.
+	Execute func(ctx context.Context, dir, executable string, args []string, env []string) error
+	// ExecuteOutput runs a plan step and returns its combined output; the
+	// pack assertions consume it.
+	ExecuteOutput func(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error)
+	GoVersion     func(ctx context.Context, dir string) (string, error)
+	Stdout        io.Writer
+	Stderr        io.Writer
 	// HasToolsMod reports whether the tenant carries a tools module.
 	HasToolsMod func(root string) bool
 	// GoFiles returns the repository's Go source files for the format gate.
 	GoFiles func(root string) ([]string, error)
+	// Packs is the capability-pack machinery: resolution, provisioning, and
+	// the pack gate plan.
+	Packs PackEngine
 }
 
 // NewOrchestrator binds the production seams of an Orchestrator.
@@ -54,11 +67,14 @@ func NewOrchestrator(config Config, stdout, stderr io.Writer) Orchestrator {
 		Config:   config,
 		Discover: NewDiscoverer(),
 		Coverage: NewCoverageRunner(stdout, stderr),
-		Execute: func(ctx context.Context, dir, executable string, args ...string) error {
-			return runProcess(ctx, dir, executable, args...)
+		Execute: func(ctx context.Context, dir, executable string, args []string, env []string) error {
+			return runProcess(ctx, dir, executable, args, env)
+		},
+		ExecuteOutput: func(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+			return runProcessOutput(ctx, dir, executable, args, env)
 		},
 		GoVersion: func(ctx context.Context, dir string) (string, error) {
-			output, err := runProcessOutput(ctx, dir, "go", "env", "GOVERSION")
+			output, err := runProcessOutput(ctx, dir, "go", []string{"env", "GOVERSION"}, nil)
 			return strings.TrimSpace(string(output)), err
 		},
 		Stdout: stdout,
@@ -68,21 +84,31 @@ func NewOrchestrator(config Config, stdout, stderr io.Writer) Orchestrator {
 			return err == nil
 		},
 		GoFiles: GoSourceFiles,
+		Packs:   NewPackEngine(stdout, stderr),
 	}
 }
 
 // Plan builds the canonical quality-gate plan for a tenant repository. The
-// plan is deterministic: identical configuration and discovery produce an
-// identical step list.
-func (o Orchestrator) Plan(root string) ([]Step, error) {
+// plan is deterministic: identical configuration, registry stand, and
+// discovery produce an identical step list. The composition order is fixed:
+// the core gates, then the pack gates, then the project gates.
+func (o Orchestrator) Plan(ctx context.Context, root string) ([]Step, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("a repository root is required for the quality gate")
 	}
-	// A declared pack is resolved against the registry during provisioning.
-	// Until the registry is bound in this orchestrator, every declaration is
-	// unknown and therefore a fail-closed finding, never a silent skip.
+	// A declared pack is resolved against the registry union at the pinned
+	// stand; an unknown reference is a fail-closed finding, never a silent
+	// skip.
+	var packs []ResolvedPack
 	if len(o.Config.Extends) > 0 {
-		return nil, fmt.Errorf("capability packs are declared (%s), but no pack registry is bound in this orchestrator version", strings.Join(o.Config.Extends, ", "))
+		resolved, err := o.Packs.Resolve(ctx, root, o.Config.Extends)
+		if err != nil {
+			return nil, err
+		}
+		packs = resolved
 	}
 	binaries, err := o.Discover.DiscoverBinaries(root)
 	if err != nil {
@@ -96,6 +122,10 @@ func (o Orchestrator) Plan(root string) ([]Step, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list Go sources: %w", err)
 	}
+	packSteps, err := o.Packs.Steps(root, packs)
+	if err != nil {
+		return nil, err
+	}
 
 	steps := make([]Step, 0, 16)
 	steps = append(steps, Step{
@@ -106,9 +136,27 @@ func (o Orchestrator) Plan(root string) ([]Step, error) {
 		Name: "check Go formatting", Executable: "gofmt", Args: append([]string{"-l"}, goFiles...),
 	})
 	steps = append(steps, canonicalAnalysisSteps(o.HasToolsMod(root))...)
+	steps = append(steps, packSteps...)
 	steps = append(steps, o.binarySteps(binaries)...)
 	steps = append(steps, o.fuzzSteps(fuzzTargets)...)
 	return steps, nil
+}
+
+// Provision resolves the declared capability packs and executes their
+// recipes. A tenant without declarations provisions nothing.
+func (o Orchestrator) Provision(ctx context.Context, root string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(o.Config.Extends) == 0 {
+		fmt.Fprintln(o.Stdout, "No capability packs declared.")
+		return nil
+	}
+	packs, err := o.Packs.Resolve(ctx, root, o.Config.Extends)
+	if err != nil {
+		return err
+	}
+	return o.Packs.Provision(ctx, packs)
 }
 
 // Run builds and executes the plan, failing closed on the first gate error.
@@ -116,7 +164,7 @@ func (o Orchestrator) Run(ctx context.Context, root string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	steps, err := o.Plan(root)
+	steps, err := o.Plan(ctx, root)
 	if err != nil {
 		return err
 	}
@@ -150,7 +198,17 @@ func (o Orchestrator) runStep(ctx context.Context, root string, step Step) error
 	if step.Name == "verify controlled toolchain" {
 		return o.verifyToolchain(stepCtx, dir)
 	}
-	if err := o.Execute(stepCtx, dir, step.Executable, step.Args...); err != nil {
+	if step.Expect != "" {
+		output, err := o.ExecuteOutput(stepCtx, dir, step.Executable, step.Args, step.Env)
+		if err != nil {
+			return fmt.Errorf("%s: %w", step.Name, err)
+		}
+		if !strings.Contains(string(output), step.Expect) {
+			return fmt.Errorf("%s: the assertion requires the output to carry %q", step.Name, step.Expect)
+		}
+		return nil
+	}
+	if err := o.Execute(stepCtx, dir, step.Executable, step.Args, step.Env); err != nil {
 		return fmt.Errorf("%s: %w", step.Name, err)
 	}
 	return nil
@@ -334,14 +392,19 @@ func goSourceFiles(root string, walk func(string, fs.WalkDirFunc) error) ([]stri
 }
 
 // runProcess executes a command, streaming its output to the process stderr.
-func runProcess(ctx context.Context, dir, executable string, args ...string) error {
-	_, err := runProcessOutput(ctx, dir, executable, args...)
+func runProcess(ctx context.Context, dir, executable string, args []string, env []string) error {
+	_, err := runProcessOutput(ctx, dir, executable, args, env)
 	return err
 }
 
-// runProcessOutput executes a command and returns its combined output.
-func runProcessOutput(ctx context.Context, dir, executable string, args ...string) ([]byte, error) {
+// runProcessOutput executes a command and returns its combined output. A
+// non-empty env extends the process environment (the pack's enforced
+// environment); a nil env inherits it unchanged.
+func runProcessOutput(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, executable, args...)
 	command.Dir = dir
+	if len(env) > 0 {
+		command.Env = append(os.Environ(), env...)
+	}
 	return command.CombinedOutput()
 }
