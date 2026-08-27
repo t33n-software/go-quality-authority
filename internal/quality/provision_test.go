@@ -25,6 +25,8 @@ type provisionState struct {
 	fetchErr        map[string]error
 	written         map[string][]byte
 	execErr         error
+	proofErr        error
+	signErr         error
 	execCalls       []string
 	mkdirErr        error
 	writeErr        error
@@ -33,22 +35,71 @@ type provisionState struct {
 	removeErr       error
 	tempErr         error
 	cacheErr        error
+	cacheCalls      int
+	cacheFailAfter  int
+	chmodCalls      int
+	chmodFailAfter  int
 	chmodCalled     bool
 	stdout          strings.Builder
+	fs              *virtualFS
+	modules         map[string]string
+	verifierBanner  string
 }
 
 // provisionEngine binds the pack engine to the fake provisioning seams.
 func provisionEngine(state *provisionState, goos string) PackEngine {
 	return PackEngine{
 		ExecuteOutput: func(_ context.Context, _ string, executable string, args []string, _ []string) ([]byte, error) {
-			state.execCalls = append(state.execCalls, executable+" "+strings.Join(args, " "))
+			joined := strings.Join(args, " ")
+			state.execCalls = append(state.execCalls, executable+" "+joined)
+			if executable == "go" {
+				// The integrity-pinned tooling channel of the tenant.
+				if module, found := strings.CutPrefix(joined, "mod download "); found {
+					if _, ok := state.modules[module]; ok {
+						return nil, nil
+					}
+					return nil, fmt.Errorf("module %s is not pinned", module)
+				}
+				if module, found := strings.CutPrefix(joined, "list -m -f {{.Dir}} "); found {
+					if dir, ok := state.modules[module]; ok {
+						return []byte(dir + "\n"), nil
+					}
+					return nil, fmt.Errorf("module %s is not pinned", module)
+				}
+				return nil, errors.New("unexpected go invocation")
+			}
 			if state.execErr != nil {
 				return nil, state.execErr
 			}
+			// The provisioned verifier binary: the version invocation is the
+			// install proof; every other invocation is a signature proof.
+			if strings.HasPrefix(joined, "version") {
+				if state.proofErr != nil {
+					return nil, state.proofErr
+				}
+				banner := state.verifierBanner
+				if banner == "" {
+					banner = "GitVersion:    v3.0.6"
+				}
+				return []byte(banner), nil
+			}
+			if state.signErr != nil {
+				return nil, state.signErr
+			}
 			return []byte("verified"), nil
 		},
-		ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist },
-		ReadDir:  func(string) ([]os.DirEntry, error) { return nil, os.ErrNotExist },
+		ReadFile: func(path string) ([]byte, error) {
+			if state.fs != nil {
+				return state.fs.readFile(path)
+			}
+			return nil, os.ErrNotExist
+		},
+		ReadDir: func(path string) ([]os.DirEntry, error) {
+			if state.fs != nil {
+				return state.fs.readDir(path)
+			}
+			return nil, os.ErrNotExist
+		},
 		Stat:     func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 		Walk:     func(string, fs.WalkDirFunc) error { return nil },
 		MkdirAll: func(string, os.FileMode) error { return state.mkdirErr },
@@ -64,6 +115,10 @@ func provisionEngine(state *provisionState, goos string) PackEngine {
 		},
 		Chmod: func(string, os.FileMode) error {
 			state.chmodCalled = true
+			state.chmodCalls++
+			if state.chmodFailAfter > 0 && state.chmodCalls > state.chmodFailAfter {
+				return errors.New("boom")
+			}
 			return state.chmodErr
 		},
 		TempDir: func(string) (string, error) {
@@ -84,6 +139,10 @@ func provisionEngine(state *provisionState, goos string) PackEngine {
 			return data, nil
 		},
 		UserCacheDir: func() (string, error) {
+			state.cacheCalls++
+			if state.cacheFailAfter > 0 && state.cacheCalls > state.cacheFailAfter {
+				return "", errors.New("boom")
+			}
 			if state.cacheErr != nil {
 				return "", state.cacheErr
 			}
@@ -148,32 +207,83 @@ func provisionReady(pack ResolvedPack, archive []byte) *provisionState {
 	}
 }
 
+// verifierBinary is the raw cosign binary fixture of the verifier bootstrap
+// tests.
+func verifierBinary() []byte { return []byte("cosign-binary") }
+
+// verifierDescriptorJSON renders the cosign bootstrap descriptor with the
+// digest of the raw binary fixture bound.
+func verifierDescriptorJSON(t *testing.T) string {
+	t.Helper()
+	sum := sha256.Sum256(verifierBinary())
+	digest := hex.EncodeToString(sum[:])
+	return `{"schema":"capability-pack/v1","capability":"cosign","area":"security","version":1,"summary":"Signature verifier bootstrap.","provisioning":{"kind":"recipe","tool":"cosign","version":"3.0.6","environment":{},"artifacts":{"linux-amd64":{"url":"https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64","sha256":"` + digest + `"},"windows-amd64":{"url":"https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-windows-amd64.exe","sha256":"` + digest + `"}}},"assertions":[{"name":"cosign-version","command":"cosign","args":["version"],"expect":"v3.0.6"}]}`
+}
+
+// bindVerifier binds the signature verifier bootstrap into the provisioning
+// seams: the shared-kernel registry carries the cosign pack in the fixture
+// tree, the tooling channel resolves both registries, and the raw cosign
+// binary fixture is bound by digest.
+func bindVerifier(t *testing.T, state *provisionState) {
+	t.Helper()
+	fs := newVirtualFS()
+	fs.addFile("go.mod", "module example.com/tenant\n")
+	fs.addFile("scg/capabilities/security/cosign/v1/pack.json", verifierDescriptorJSON(t))
+	state.fs = fs
+	state.modules = map[string]string{
+		sharedKernelModule:  "scg",
+		territoryHomeModule: "gqa",
+	}
+	state.fetch["https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64"] = verifierBinary()
+	state.fetch["https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-windows-amd64.exe"] = verifierBinary()
+}
+
 func TestPackEngineProvision(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	if err := e.Provision(context.Background(), []ResolvedPack{pack}); err != nil {
+	if err := e.Provision(context.Background(), ".", []ResolvedPack{pack}); err != nil {
 		t.Fatalf("Provision: %v", err)
+	}
+	// The verifier is provisioned from its raw binary before the
+	// signature-bound pack: its install proof precedes the pack's signature
+	// proof.
+	verifierTool := filepath.Join("cache", "go-quality-authority", "packs", "cosign", "v1", "linux-amd64", "cosign")
+	if string(state.written[verifierTool]) != "cosign-binary" {
+		t.Fatalf("the verifier was not installed from the raw binary: %+v", state.written)
 	}
 	toolPath := filepath.Join("cache", "go-quality-authority", "packs", "opentofu", "v1", "linux-amd64", "tofu")
 	if string(state.written[toolPath]) != "tool-binary" {
 		t.Fatalf("the tool was not installed: %+v", state.written)
 	}
 	if !state.chmodCalled {
-		t.Fatal("expected the tool to be marked executable on a non-windows runner")
+		t.Fatal("expected the tools to be marked executable on a non-windows runner")
 	}
-	if len(state.execCalls) != 1 {
-		t.Fatalf("expected exactly one cosign verification, got %+v", state.execCalls)
+	proofAt, signAt := -1, -1
+	for index, call := range state.execCalls {
+		if strings.HasSuffix(call, " version") {
+			proofAt = index
+		}
+		if strings.Contains(call, " verify-blob ") {
+			signAt = index
+		}
 	}
-	call := state.execCalls[0]
+	if proofAt < 0 || signAt < 0 || proofAt > signAt {
+		t.Fatalf("the verifier install proof must precede the signature proof: %+v", state.execCalls)
+	}
+	call := state.execCalls[signAt]
 	for _, want := range []string{
-		"cosign", "verify-blob", "--certificate", "--signature",
+		verifierTool, "verify-blob", "--certificate", "--signature",
 		"--certificate-identity", "https://github.com/opentofu/opentofu/.github/workflows/release.yml@refs/heads/v1.12",
 		"--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
 	} {
 		if !strings.Contains(call, want) {
 			t.Fatalf("the cosign invocation is missing %q: %q", want, call)
 		}
+	}
+	if !strings.Contains(state.stdout.String(), "provisioned cosign@1") {
+		t.Fatalf("stdout = %q", state.stdout.String())
 	}
 	if !strings.Contains(state.stdout.String(), "provisioned opentofu@1") {
 		t.Fatalf("stdout = %q", state.stdout.String())
@@ -186,8 +296,9 @@ func TestPackEngineProvisionNoArtifactForPlatform(t *testing.T) {
 	delete(pack.Descriptor.Provisioning.Artifacts, "linux-amd64")
 	pack.Descriptor.Provisioning.Artifacts["darwin-arm64"] = artifact
 	state := provisionReady(pack, nil)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the unbound-platform finding")
 	}
@@ -200,8 +311,9 @@ func TestPackEngineProvisionDownloadError(t *testing.T) {
 	pack, _ := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, nil)
 	state.fetchErr[pack.Descriptor.Provisioning.Artifacts["linux-amd64"].URL] = errors.New("network down")
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the download finding")
 	}
@@ -216,8 +328,9 @@ func TestPackEngineProvisionDigestMismatch(t *testing.T) {
 	artifact.SHA256 = strings.Repeat("b", 64)
 	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the digest finding")
 	}
@@ -233,8 +346,9 @@ func TestPackEngineProvisionSignatureNoAnchor(t *testing.T) {
 	artifact.Signature = "https://example.com/tofu.zip.sig"
 	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the missing-anchor finding")
 	}
@@ -249,8 +363,9 @@ func TestPackEngineProvisionSignatureNotSigForm(t *testing.T) {
 	artifact.Signature = strings.TrimSuffix(artifact.Signature, ".sig") + ".asc"
 	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the signature-form finding")
 	}
@@ -263,8 +378,9 @@ func TestPackEngineProvisionSignatureDownloadError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, archive)
 	state.fetchErr[pack.Descriptor.Provisioning.Artifacts["linux-amd64"].Signature] = errors.New("network down")
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the signature download finding")
 	}
@@ -278,8 +394,9 @@ func TestPackEngineProvisionCertificateDownloadError(t *testing.T) {
 	state := provisionReady(pack, archive)
 	signature := pack.Descriptor.Provisioning.Artifacts["linux-amd64"].Signature
 	state.fetchErr[strings.TrimSuffix(signature, ".sig")+".pem"] = errors.New("network down")
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the certificate download finding")
 	}
@@ -288,16 +405,207 @@ func TestPackEngineProvisionCertificateDownloadError(t *testing.T) {
 	}
 }
 
-func TestPackEngineProvisionCosignMissing(t *testing.T) {
+func TestPackEngineProvisionVerifierNotExecutable(t *testing.T) {
+	// The verifier's install proof fails closed when the provisioned binary
+	// is not executable — the engine provisions the verifier itself, so a
+	// missing binary is a provisioning defect, never a lane assumption.
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, archive)
-	state.execErr = exec.ErrNotFound
+	bindVerifier(t, state)
+	state.proofErr = exec.ErrNotFound
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
-		t.Fatal("expected the cosign-availability finding")
+		t.Fatal("expected the verifier install-proof finding")
 	}
-	if !strings.Contains(err.Error(), "cosign is not available") {
+	if !strings.Contains(err.Error(), "install proof") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionVerifierProofMismatch(t *testing.T) {
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	state.verifierBanner = "GitVersion:    v9.9.9"
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the verifier proof-mismatch finding")
+	}
+	if !strings.Contains(err.Error(), "requires the output to carry") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionVerifierUnknown(t *testing.T) {
+	// A signature-bound pack fails closed when the registry at the pinned
+	// stand does not carry the verifier pack.
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	fs := newVirtualFS()
+	fs.addFile("go.mod", "module example.com/tenant\n")
+	state.fs = fs
+	state.modules = map[string]string{sharedKernelModule: "scg", territoryHomeModule: "gqa"}
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the verifier-resolution finding")
+	}
+	if !strings.Contains(err.Error(), "provision the signature verifier") {
+		t.Fatalf("error = %q", err)
+	}
+	toolPath := filepath.Join("cache", "go-quality-authority", "packs", "opentofu", "v1", "linux-amd64", "tofu")
+	if _, found := state.written[toolPath]; found {
+		t.Fatal("the signature-bound pack must not be provisioned without the verifier")
+	}
+}
+
+func TestPackEngineProvisionVerifierWrongIdentity(t *testing.T) {
+	// A cosign pack carried by the territory registry instead of the shared
+	// kernel is not the engine-bound verifier identity.
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	fs := newVirtualFS()
+	fs.addFile("go.mod", "module example.com/tenant\n")
+	fs.addFile("gqa/capabilities/security/cosign/v1/pack.json", verifierDescriptorJSON(t))
+	state.fs = fs
+	state.modules = map[string]string{sharedKernelModule: "scg", territoryHomeModule: "gqa"}
+	state.fetch["https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64"] = verifierBinary()
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the verifier-identity finding")
+	}
+	if !strings.Contains(err.Error(), "is not the engine-bound identity") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionVerifierAssertionCommandMismatch(t *testing.T) {
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	document := strings.Replace(verifierDescriptorJSON(t), `"command":"cosign"`, `"command":"other"`, 1)
+	state.fs.addFile("scg/capabilities/security/cosign/v1/pack.json", document)
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the verifier assertion-command finding")
+	}
+	if !strings.Contains(err.Error(), "must be the provisioned tool") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionVerifierRawBinaryOverBound(t *testing.T) {
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	e := provisionEngine(state, "linux")
+	e.MaxToolBytes = 4
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the over-bound finding")
+	}
+	if !strings.Contains(err.Error(), "exceeds the extraction bound") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionZipChmodError(t *testing.T) {
+	// The zip-form install marks the extracted tool executable; the failure
+	// is fail-closed.
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	state.chmodFailAfter = 1
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the chmod finding")
+	}
+	if !strings.Contains(err.Error(), "mark the tool") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionVerifierRegistryUnavailable(t *testing.T) {
+	// The verifier bootstrap fails closed when the tenant carries no
+	// integrity-pinned tooling module.
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	e := provisionEngine(state, "linux")
+	e.HasToolsMod = func(string) bool { return false }
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the registry finding")
+	}
+	if !strings.Contains(err.Error(), "provision the signature verifier") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionVerifierProofToolPathError(t *testing.T) {
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	state.cacheFailAfter = 1
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the proof tool-path finding")
+	}
+	if !strings.Contains(err.Error(), "prove the signature verifier") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionVerifierToolPathError(t *testing.T) {
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	state.cacheFailAfter = 2
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the verifier tool-path finding")
+	}
+	if !strings.Contains(err.Error(), "locate the pack tool cache") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionSignatureVerifierNotExecutable(t *testing.T) {
+	// The signature proof fails closed when the provisioned verifier binary is
+	// not executable.
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	state.signErr = exec.ErrNotFound
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the verifier-execution finding")
+	}
+	if !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineProvisionVerifierInstallWriteError(t *testing.T) {
+	// The raw-binary install of the verifier fails closed on the write error.
+	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
+	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
+	state.writeFailSuffix = "cosign"
+	e := provisionEngine(state, "linux")
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the verifier install finding")
+	}
+	if !strings.Contains(err.Error(), "install the tool") {
 		t.Fatalf("error = %q", err)
 	}
 }
@@ -305,9 +613,10 @@ func TestPackEngineProvisionCosignMissing(t *testing.T) {
 func TestPackEngineProvisionCosignFailure(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, archive)
-	state.execErr = errors.New("signature mismatch")
+	bindVerifier(t, state)
+	state.signErr = errors.New("signature mismatch")
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the invalid-signature finding")
 	}
@@ -316,22 +625,28 @@ func TestPackEngineProvisionCosignFailure(t *testing.T) {
 	}
 }
 
-func TestPackEngineProvisionWithoutSignature(t *testing.T) {
+func TestPackEngineProvisionDigestOnlyGuard(t *testing.T) {
+	// A non-verifier pack without a signature binding fails closed: only the
+	// engine-bound signature verifier is provisioned digest-only.
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
 	artifact.Signature = ""
 	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
 	e := provisionEngine(state, "linux")
-	if err := e.Provision(context.Background(), []ResolvedPack{pack}); err != nil {
-		t.Fatalf("Provision: %v", err)
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the digest-only guard finding")
+	}
+	if !strings.Contains(err.Error(), "binds no signature proof") {
+		t.Fatalf("error = %q", err)
 	}
 	if len(state.execCalls) != 0 {
-		t.Fatalf("a descriptor without a signature must not invoke cosign: %+v", state.execCalls)
+		t.Fatalf("the guard must fire before any registry or proof invocation: %+v", state.execCalls)
 	}
 	toolPath := filepath.Join("cache", "go-quality-authority", "packs", "opentofu", "v1", "linux-amd64", "tofu")
-	if string(state.written[toolPath]) != "tool-binary" {
-		t.Fatalf("the tool was not installed: %+v", state.written)
+	if _, found := state.written[toolPath]; found {
+		t.Fatal("a digest-only non-verifier pack must never be installed")
 	}
 }
 
@@ -341,11 +656,11 @@ func TestPackEngineProvisionNotAZip(t *testing.T) {
 	pack := testResolvedPack()
 	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
 	artifact.SHA256 = hex.EncodeToString(sum[:])
-	artifact.Signature = ""
 	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the archive-form finding")
 	}
@@ -356,12 +671,10 @@ func TestPackEngineProvisionNotAZip(t *testing.T) {
 
 func TestPackEngineProvisionToolMissing(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"other": "x"})
-	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
-	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the missing-tool finding")
 	}
@@ -372,12 +685,10 @@ func TestPackEngineProvisionToolMissing(t *testing.T) {
 
 func TestPackEngineProvisionToolDuplicate(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "a", "bin/tofu": "b"})
-	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
-	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the duplicate-tool finding")
 	}
@@ -388,13 +699,11 @@ func TestPackEngineProvisionToolDuplicate(t *testing.T) {
 
 func TestPackEngineProvisionChmodError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
-	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
-	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	state.chmodErr = errors.New("boom")
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the chmod finding")
 	}
@@ -406,12 +715,12 @@ func TestPackEngineProvisionChmodError(t *testing.T) {
 func TestPackEngineProvisionWindowsNoChmod(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu.exe": "tool-binary"})
 	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
 	delete(pack.Descriptor.Provisioning.Artifacts, "linux-amd64")
 	pack.Descriptor.Provisioning.Artifacts["windows-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "windows")
-	if err := e.Provision(context.Background(), []ResolvedPack{pack}); err != nil {
+	if err := e.Provision(context.Background(), ".", []ResolvedPack{pack}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	if state.chmodCalled {
@@ -425,26 +734,22 @@ func TestPackEngineProvisionWindowsNoChmod(t *testing.T) {
 
 func TestPackEngineProvisionCacheError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
-	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
-	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	state.cacheErr = errors.New("boom")
 	e := provisionEngine(state, "linux")
-	if err := e.Provision(context.Background(), []ResolvedPack{pack}); err == nil {
+	if err := e.Provision(context.Background(), ".", []ResolvedPack{pack}); err == nil {
 		t.Fatal("expected the cache-location finding")
 	}
 }
 
 func TestPackEngineProvisionCleanCacheError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
-	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
-	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	state.removeErr = errors.New("boom")
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the cache-clean finding")
 	}
@@ -455,13 +760,11 @@ func TestPackEngineProvisionCleanCacheError(t *testing.T) {
 
 func TestPackEngineProvisionMkdirError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
-	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
-	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	state.mkdirErr = errors.New("boom")
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the cache-create finding")
 	}
@@ -472,13 +775,11 @@ func TestPackEngineProvisionMkdirError(t *testing.T) {
 
 func TestPackEngineProvisionWriteToolError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
-	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
-	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
-	state.writeErr = errors.New("boom")
+	bindVerifier(t, state)
+	state.writeFailSuffix = "tofu"
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the tool-write finding")
 	}
@@ -490,9 +791,10 @@ func TestPackEngineProvisionWriteToolError(t *testing.T) {
 func TestPackEngineProvisionStagingTempError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	state.tempErr = errors.New("boom")
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the staging finding")
 	}
@@ -504,9 +806,10 @@ func TestPackEngineProvisionStagingTempError(t *testing.T) {
 func TestPackEngineProvisionStagingWriteError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, archive)
-	state.writeErr = errors.New("boom")
+	bindVerifier(t, state)
+	state.writeFailSuffix = "artifact.bin"
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the staging write finding")
 	}
@@ -518,9 +821,10 @@ func TestPackEngineProvisionStagingWriteError(t *testing.T) {
 func TestPackEngineProvisionStagingSignatureWriteError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	state.writeFailSuffix = ".sig"
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the signature staging finding")
 	}
@@ -532,9 +836,10 @@ func TestPackEngineProvisionStagingSignatureWriteError(t *testing.T) {
 func TestPackEngineProvisionStagingCertificateWriteError(t *testing.T) {
 	pack, archive := provisionFixture(t, map[string]string{"tofu": "tool-binary"})
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	state.writeFailSuffix = ".pem"
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the certificate staging finding")
 	}
@@ -546,12 +851,10 @@ func TestPackEngineProvisionStagingCertificateWriteError(t *testing.T) {
 func TestPackEngineProvisionSkipsNonRegularEntries(t *testing.T) {
 	// A directory entry in the archive is not a tool candidate and is skipped.
 	pack, archive := provisionFixture(t, map[string]string{"docs/": "", "tofu": "tool-binary"})
-	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
-	artifact.Signature = ""
-	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	if err := e.Provision(context.Background(), []ResolvedPack{pack}); err != nil {
+	if err := e.Provision(context.Background(), ".", []ResolvedPack{pack}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	toolPath := filepath.Join("cache", "go-quality-authority", "packs", "opentofu", "v1", "linux-amd64", "tofu")
@@ -581,11 +884,11 @@ func TestPackEngineProvisionOpenUnsupportedMethod(t *testing.T) {
 	sum := sha256.Sum256(archive)
 	artifact := pack.Descriptor.Provisioning.Artifacts["linux-amd64"]
 	artifact.SHA256 = hex.EncodeToString(sum[:])
-	artifact.Signature = ""
 	pack.Descriptor.Provisioning.Artifacts["linux-amd64"] = artifact
 	state := provisionReady(pack, archive)
+	bindVerifier(t, state)
 	e := provisionEngine(state, "linux")
-	err := e.Provision(context.Background(), []ResolvedPack{pack})
+	err := e.Provision(context.Background(), ".", []ResolvedPack{pack})
 	if err == nil {
 		t.Fatal("expected the tool-entry open finding")
 	}

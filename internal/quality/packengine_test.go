@@ -88,7 +88,7 @@ func testPackDescriptor() PackDescriptor {
 				},
 			},
 		},
-		Discovery: PackDiscovery{
+		Discovery: &PackDiscovery{
 			Roots:       PackRoots{FileGlob: "**/*.tf"},
 			ExcludeDirs: []string{".terraform"},
 		},
@@ -415,6 +415,37 @@ func TestPackEngineResolveModuleDir(t *testing.T) {
 	}
 	if _, err := e.resolveModuleDir(context.Background(), ".", "example.com/m"); err == nil {
 		t.Fatal("expected the empty-directory error")
+	}
+}
+
+func TestPackEngineResolveVerifierTenantDeclaration(t *testing.T) {
+	// The signature verifier is machinery-internal: a tenant never declares
+	// it, and the declaration fails closed.
+	fs := newVirtualFS()
+	fs.addFile("go.mod", "module example.com/tenant\n")
+	e := fakePackEngine(fs)
+	_, err := e.Resolve(context.Background(), ".", []string{"cosign@1"})
+	if err == nil {
+		t.Fatal("expected the machinery-internal finding")
+	}
+	if !strings.Contains(err.Error(), "machinery-internal") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestPackEngineStepsPerRootWithoutDiscovery(t *testing.T) {
+	// A per-root gate without the discovery surface fails closed instead of
+	// dereferencing the absent surface.
+	e := fakePackEngine(newVirtualFS())
+	pack := testResolvedPack()
+	pack.Descriptor.Discovery = nil
+	provisionTool(t, &e, pack)
+	_, err := e.Steps(".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the missing-discovery finding")
+	}
+	if !strings.Contains(err.Error(), "without the discovery surface") {
+		t.Fatalf("error = %q", err)
 	}
 }
 
