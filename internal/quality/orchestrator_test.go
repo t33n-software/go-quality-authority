@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	iofs "io/fs"
 	"os"
@@ -665,17 +666,48 @@ func TestOrchestratorProvisionDelegation(t *testing.T) {
 	o, _ := fakeOrchestrator(fs)
 	o.Config.Extends = []string{"opentofu@1"}
 	// The working-tree registry carries the pack with the digest of the
-	// fixture archive and no signature reference, so the recipe runs
-	// end-to-end against the fake seams.
+	// fixture archive and the publisher-signed signature reference; the
+	// shared-kernel registry carries the verifier bootstrap through the
+	// tooling channel, so the recipe runs end-to-end against the fake seams.
 	archive := buildZip(t, map[string]string{"tofu": "tool-binary"})
 	sum := sha256.Sum256(archive)
-	document := strings.Replace(validPackJSON(), `"sha256":"dade9650e6b74fc7a8b986bd8717497d32f9e09cf82e479afef4977fa3085536"`, `"sha256":"`+hex.EncodeToString(sum[:])+`"`, 1)
-	document = strings.Replace(document, `,"signature":"https://example.com/tofu.zip.sig"`, ``, 1)
+	document := strings.Replace(validPackJSON(), "https://example.com/tofu.zip", "https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.zip", -1)
+	document = strings.Replace(document, `"sha256":"dade9650e6b74fc7a8b986bd8717497d32f9e09cf82e479afef4977fa3085536"`, `"sha256":"`+hex.EncodeToString(sum[:])+`"`, 1)
 	fs.addFile("go.mod", "module "+territoryHomeModule+"\n")
 	fs.addFile("capabilities/infrastructure/opentofu/v1/pack.json", document)
+	fs.addFile("scg/capabilities/security/cosign/v1/pack.json", verifierDescriptorJSON(t))
+	o.Packs.ExecuteOutput = func(_ context.Context, _ string, executable string, args []string, _ []string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if executable == "go" {
+			if module, found := strings.CutPrefix(joined, "mod download "); found {
+				if module == sharedKernelModule {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("module %s is not pinned", module)
+			}
+			if module, found := strings.CutPrefix(joined, "list -m -f {{.Dir}} "); found {
+				if module == sharedKernelModule {
+					return []byte("scg\n"), nil
+				}
+				return nil, fmt.Errorf("module %s is not pinned", module)
+			}
+			return nil, errors.New("unexpected go invocation")
+		}
+		if strings.HasPrefix(joined, "version") {
+			return []byte("GitVersion:    v3.0.6"), nil
+		}
+		return []byte("verified"), nil
+	}
 	o.Packs.Fetch = func(_ context.Context, url string, _ int64) ([]byte, error) {
-		if url == "https://example.com/tofu.zip" {
+		switch url {
+		case "https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.zip":
 			return archive, nil
+		case "https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.zip.sig":
+			return []byte("signature"), nil
+		case "https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.zip.pem":
+			return []byte("certificate"), nil
+		case "https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64":
+			return verifierBinary(), nil
 		}
 		return nil, errors.New("unexpected download")
 	}
@@ -683,6 +715,9 @@ func TestOrchestratorProvisionDelegation(t *testing.T) {
 	o.Packs.Stdout = &stdout
 	if err := o.Provision(context.Background(), "."); err != nil {
 		t.Fatalf("Provision: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "provisioned cosign@1") {
+		t.Fatalf("stdout = %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "provisioned opentofu@1") {
 		t.Fatalf("stdout = %q", stdout.String())

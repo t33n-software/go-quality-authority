@@ -25,6 +25,38 @@ const (
 	sharedKernelModule  = "github.com/t33n-software/supply-chain-governance"
 )
 
+// The signature verifier bootstrap identity: the engine binds the verifier's
+// capability identity as machinery configuration — cosign in the shared
+// kernel's security area — resolves it against the registry at the tenant's
+// pinned stand, and provisions it before any signature-bound pack. The
+// verifier is the single documented digest-only identity, and it is never
+// tenant-declared, payload-provided, or runner-assumed.
+const (
+	verifierCapability = "cosign"
+	verifierArea       = "security"
+	verifierMajor      = 1
+	verifierReference  = "cosign@1"
+)
+
+// isVerifierBootstrap reports whether the pack is the engine-bound signature
+// verifier identity — the single documented digest-only exception.
+func isVerifierBootstrap(pack ResolvedPack) bool {
+	return pack.Descriptor.Capability == verifierCapability &&
+		pack.Descriptor.Area == verifierArea &&
+		pack.Registry == sharedKernelModule
+}
+
+// packBindsSignature reports whether the pack binds a signature proof for
+// any platform.
+func packBindsSignature(pack ResolvedPack) bool {
+	for _, artifact := range pack.Descriptor.Provisioning.Artifacts {
+		if artifact.Signature != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolvedPack is a descriptor proven against a registry at the pinned stand.
 type ResolvedPack struct {
 	// Reference is the declared <capability>@<major> reference.
@@ -132,6 +164,9 @@ func (e PackEngine) Resolve(ctx context.Context, root string, references []strin
 	resolved := make([]ResolvedPack, 0, len(references))
 	for _, reference := range references {
 		capability, major := splitPackReference(reference)
+		if capability == verifierCapability {
+			return nil, fmt.Errorf("capability pack reference %q is machinery-internal: the engine binds and provisions the signature verifier itself, so a tenant never declares it", reference)
+		}
 		pack, err := e.resolveOne(reference, capability, major, search)
 		if err != nil {
 			return nil, err
@@ -482,7 +517,10 @@ func (e PackEngine) Steps(root string, packs []ResolvedPack) ([]Step, error) {
 		}
 		var roots []string
 		if needsRoots {
-			roots, err = e.DiscoverRoots(root, pack.Descriptor.Discovery)
+			if pack.Descriptor.Discovery == nil {
+				return nil, fmt.Errorf("capability pack %q carries a per-root gate without the discovery surface", pack.Reference)
+			}
+			roots, err = e.DiscoverRoots(root, *pack.Descriptor.Discovery)
 			if err != nil {
 				return nil, err
 			}

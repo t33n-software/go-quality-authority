@@ -156,7 +156,7 @@ func (o Orchestrator) Provision(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
-	return o.Packs.Provision(ctx, packs)
+	return o.Packs.Provision(ctx, root, packs)
 }
 
 // Run builds and executes the plan, failing closed on the first gate error.

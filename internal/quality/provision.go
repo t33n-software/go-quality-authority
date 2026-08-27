@@ -28,18 +28,83 @@ const (
 // the bound artifact for the runner platform is downloaded through the
 // integrity channel, its sha256 digest is verified fail-closed, its cosign
 // signature is verified where the descriptor binds one, and the tool is
-// installed into the pack tool cache.
-func (e PackEngine) Provision(ctx context.Context, packs []ResolvedPack) error {
+// installed into the pack tool cache. Before the first signature-bound pack,
+// the engine resolves and provisions the bound signature verifier from the
+// registry — the machinery-internal bootstrap, never a tenant declaration, a
+// payload step, or a runner assumption.
+func (e PackEngine) Provision(ctx context.Context, root string, packs []ResolvedPack) error {
+	verifierTool := ""
 	for _, pack := range packs {
-		if err := e.provisionOne(ctx, pack); err != nil {
+		if packBindsSignature(pack) && verifierTool == "" {
+			tool, err := e.provisionVerifier(ctx, root)
+			if err != nil {
+				return err
+			}
+			verifierTool = tool
+		}
+		if err := e.provisionOne(ctx, pack, verifierTool); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// provisionOne executes the recipe of one resolved pack.
-func (e PackEngine) provisionOne(ctx context.Context, pack ResolvedPack) error {
+// provisionVerifier resolves the engine-bound signature verifier against the
+// registry at the tenant's pinned stand, provisions it digest-only under the
+// single documented bootstrap exception, and runs its assertions as the
+// install proof. Only the cosign pack of the shared kernel's security area is
+// the verifier identity; every other resolution fails closed.
+func (e PackEngine) provisionVerifier(ctx context.Context, root string) (string, error) {
+	search, err := e.registryTrees(ctx, root)
+	if err != nil {
+		return "", fmt.Errorf("provision the signature verifier: %w", err)
+	}
+	pack, err := e.resolveOne(verifierReference, verifierCapability, verifierMajor, search)
+	if err != nil {
+		return "", fmt.Errorf("provision the signature verifier: %w", err)
+	}
+	if !isVerifierBootstrap(pack) {
+		return "", fmt.Errorf("provision the signature verifier: the resolved pack %q from registry %s is not the engine-bound identity %s in the %s area of %s",
+			pack.Reference, pack.Registry, verifierCapability, verifierArea, sharedKernelModule)
+	}
+	if err := e.provisionOne(ctx, pack, ""); err != nil {
+		return "", err
+	}
+	if err := e.proveVerifier(ctx, pack); err != nil {
+		return "", err
+	}
+	return e.ToolPath(pack)
+}
+
+// proveVerifier runs the verifier pack's assertions against the installed
+// binary: the install proof runs inside provisioning, never as a tenant gate.
+func (e PackEngine) proveVerifier(ctx context.Context, pack ResolvedPack) error {
+	toolPath, err := e.ToolPath(pack)
+	if err != nil {
+		return fmt.Errorf("prove the signature verifier: %w", err)
+	}
+	env := packEnvironment(pack.Descriptor.Provisioning.Environment)
+	for _, assertion := range pack.Descriptor.Assertions {
+		if assertion.Command != pack.Descriptor.Provisioning.Tool {
+			return fmt.Errorf("the signature verifier assertion %q command %q must be the provisioned tool %q",
+				assertion.Name, assertion.Command, pack.Descriptor.Provisioning.Tool)
+		}
+		output, err := e.ExecuteOutput(ctx, filepath.Dir(toolPath), toolPath, assertion.Args, env)
+		if err != nil {
+			return fmt.Errorf("the signature verifier install proof %q: %w", assertion.Name, err)
+		}
+		if !strings.Contains(string(output), assertion.Expect) {
+			return fmt.Errorf("the signature verifier install proof %q requires the output to carry %q", assertion.Name, assertion.Expect)
+		}
+	}
+	return nil
+}
+
+// provisionOne executes the recipe of one resolved pack. The signature proof
+// runs through the provisioned verifier binary; a pack without a signature
+// binding is provisioned digest-only only when it is the engine-bound
+// verifier itself — every other pack fails closed.
+func (e PackEngine) provisionOne(ctx context.Context, pack ResolvedPack, verifierTool string) error {
 	provisioning := pack.Descriptor.Provisioning
 	platform := e.GOOS + "-" + e.GOARCH
 	artifact, bound := provisioning.Artifacts[platform]
@@ -55,15 +120,22 @@ func (e PackEngine) provisionOne(ctx context.Context, pack ResolvedPack) error {
 		return fmt.Errorf("capability pack %q artifact digest mismatch: the downloaded artifact does not match the bound sha256", pack.Reference)
 	}
 	if artifact.Signature != "" {
-		if err := e.verifySignature(ctx, pack, artifact, data); err != nil {
+		if err := e.verifySignature(ctx, pack, artifact, data, verifierTool); err != nil {
 			return err
 		}
+	} else if !isVerifierBootstrap(pack) {
+		return fmt.Errorf("capability pack %q binds no signature proof for the runner platform %s: only the engine-bound signature verifier is provisioned digest-only", pack.Reference, platform)
 	}
-	if err := e.install(pack, data); err != nil {
+	if err := e.install(pack, artifact, data); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.Stdout, "provisioned %s: %s %s (%s), sha256 and signature verified\n",
-		pack.Reference, provisioning.Tool, provisioning.Version, platform)
+	if artifact.Signature != "" {
+		fmt.Fprintf(e.Stdout, "provisioned %s: %s %s (%s), sha256 and signature verified\n",
+			pack.Reference, provisioning.Tool, provisioning.Version, platform)
+	} else {
+		fmt.Fprintf(e.Stdout, "provisioned %s: %s %s (%s), sha256 verified (the digest-only bootstrap exception)\n",
+			pack.Reference, provisioning.Tool, provisioning.Version, platform)
+	}
 	return nil
 }
 
@@ -120,10 +192,11 @@ func releaseFamily(version string) string {
 }
 
 // verifySignature verifies the bound cosign signature of the downloaded
-// artifact: the signature and its certificate (the cosign keyless .sig/.pem
-// pair) are downloaded, and cosign verify-blob proves the artifact against
-// the publisher's OIDC-bound release-workflow identity.
-func (e PackEngine) verifySignature(ctx context.Context, pack ResolvedPack, artifact PackArtifact, data []byte) error {
+// artifact through the provisioned verifier binary: the signature and its
+// certificate (the cosign keyless .sig/.pem pair) are downloaded, and the
+// verifier's verify-blob proves the artifact against the publisher's
+// OIDC-bound release-workflow identity.
+func (e PackEngine) verifySignature(ctx context.Context, pack ResolvedPack, artifact PackArtifact, data []byte, verifierTool string) error {
 	anchor, bound := publisherAnchorFor(artifact.URL)
 	if !bound {
 		return fmt.Errorf("capability pack %q artifact publisher carries no bound trust anchor", pack.Reference)
@@ -157,7 +230,7 @@ func (e PackEngine) verifySignature(ctx context.Context, pack ResolvedPack, arti
 	if err := e.WriteFile(certificatePath, certificate, 0o600); err != nil {
 		return fmt.Errorf("stage the signature certificate of capability pack %q: %w", pack.Reference, err)
 	}
-	output, err := e.ExecuteOutput(ctx, staging, "cosign", []string{
+	output, err := e.ExecuteOutput(ctx, staging, verifierTool, []string{
 		"verify-blob",
 		"--certificate", certificatePath,
 		"--signature", signaturePath,
@@ -167,19 +240,21 @@ func (e PackEngine) verifySignature(ctx context.Context, pack ResolvedPack, arti
 	}, nil)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("verify the signature of capability pack %q: cosign is not available on the lane: %w", pack.Reference, err)
+			return fmt.Errorf("verify the signature of capability pack %q: the provisioned signature verifier is not executable: %w", pack.Reference, err)
 		}
 		return fmt.Errorf("the signature of capability pack %q is invalid: %w (%s)", pack.Reference, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
 
-// install extracts the pack's tool from the verified artifact into the pack
-// tool cache. The output path is always the computed tool path — the
-// extraction never derives an output location from the archive, so no path
-// traversal is possible; only the regular file carrying the tool is
-// extracted, and the decompression is bounded.
-func (e PackEngine) install(pack ResolvedPack, data []byte) error {
+// install places the pack's verified artifact into the pack tool cache. The
+// artifact form derives from the bound URL: a .zip archive carries the tool
+// as an entry; any other form is the raw tool binary itself. The output path
+// is always the computed tool path — the install never derives an output
+// location from the artifact, so no path traversal is possible; only the
+// regular file carrying the tool is extracted from an archive, and every
+// read is bounded.
+func (e PackEngine) install(pack ResolvedPack, artifact PackArtifact, data []byte) error {
 	toolPath, err := e.ToolPath(pack)
 	if err != nil {
 		return err
@@ -190,6 +265,21 @@ func (e PackEngine) install(pack ResolvedPack, data []byte) error {
 	}
 	if err := e.MkdirAll(target, 0o755); err != nil {
 		return fmt.Errorf("create the pack tool cache of capability pack %q: %w", pack.Reference, err)
+	}
+	if !strings.HasSuffix(artifact.URL, ".zip") {
+		// The raw-binary form: the verified artifact is the tool itself.
+		if int64(len(data)) > e.maxToolBytes() {
+			return fmt.Errorf("the artifact of capability pack %q exceeds the extraction bound", pack.Reference)
+		}
+		if err := e.WriteFile(toolPath, data, 0o755); err != nil {
+			return fmt.Errorf("install the tool of capability pack %q: %w", pack.Reference, err)
+		}
+		if e.GOOS != "windows" {
+			if err := e.Chmod(toolPath, 0o755); err != nil {
+				return fmt.Errorf("mark the tool of capability pack %q executable: %w", pack.Reference, err)
+			}
+		}
+		return nil
 	}
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {

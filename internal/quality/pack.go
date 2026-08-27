@@ -40,6 +40,10 @@ var (
 // PackDescriptor is one versioned capability pack descriptor. The descriptor
 // is data, never code: the orchestrator interprets it generically, so a new
 // pack is a new descriptor with its vectors, never an orchestrator change.
+// The discovery and gates surfaces are nil for the engine-bound signature
+// verifier bootstrap pack, whose proof runs inside provisioning; every
+// gate-carrying pack binds the gates, and a per-root gate never exists
+// without the discovery surface.
 type PackDescriptor struct {
 	Schema       string           `json:"schema"`
 	Capability   string           `json:"capability"`
@@ -47,7 +51,7 @@ type PackDescriptor struct {
 	Version      int              `json:"version"`
 	Summary      string           `json:"summary"`
 	Provisioning PackProvisioning `json:"provisioning"`
-	Discovery    PackDiscovery    `json:"discovery"`
+	Discovery    *PackDiscovery   `json:"discovery"`
 	Assertions   []PackAssertion  `json:"assertions"`
 	Gates        []PackGate       `json:"gates"`
 }
@@ -181,21 +185,26 @@ func (d PackDescriptor) Validate() error {
 	if err := d.Provisioning.validate(); err != nil {
 		return fmt.Errorf("provisioning: %w", err)
 	}
-	if err := d.Discovery.validate(); err != nil {
-		return fmt.Errorf("discovery: %w", err)
+	if d.Discovery != nil {
+		if err := d.Discovery.validate(); err != nil {
+			return fmt.Errorf("discovery: %w", err)
+		}
 	}
 	for index, assertion := range d.Assertions {
 		if err := assertion.validate(); err != nil {
 			return fmt.Errorf("assertions[%d]: %w", index, err)
 		}
 	}
-	if len(d.Gates) == 0 {
-		return errors.New("gates must not be empty")
+	if d.Gates != nil && len(d.Gates) == 0 {
+		return errors.New("gates must not be empty when the gates field is present")
 	}
 	seen := make(map[string]struct{}, len(d.Gates))
 	for index, gate := range d.Gates {
 		if err := gate.validate(d.Capability); err != nil {
 			return fmt.Errorf("gates[%d]: %w", index, err)
+		}
+		if gate.Scope == PackScopePerRoot && d.Discovery == nil {
+			return fmt.Errorf("gates[%d]: the per-root scope requires the discovery surface", index)
 		}
 		if _, found := seen[gate.Name]; found {
 			return fmt.Errorf("gates[%d]: gate name %q is not unique", index, gate.Name)

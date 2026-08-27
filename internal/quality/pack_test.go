@@ -68,6 +68,34 @@ func TestDecodePackDescriptorWithoutSignature(t *testing.T) {
 	}
 }
 
+func TestDecodePackDescriptorBootstrapForm(t *testing.T) {
+	// The engine-bound signature verifier bootstrap form: the install-proof
+	// assertion without the gates and discovery surfaces.
+	document := `{"schema":"capability-pack/v1","capability":"cosign","area":"security","version":1,"summary":"Signature verifier bootstrap.","provisioning":{"kind":"recipe","tool":"cosign","version":"3.0.6","environment":{},"artifacts":{"linux-amd64":{"url":"https://example.com/cosign-linux-amd64","sha256":"` + strings.Repeat("b", 64) + `"}}},"assertions":[{"name":"cosign-version","command":"cosign","args":["version"],"expect":"v3.0.6"}]}`
+	descriptor, err := DecodePackDescriptor([]byte(document))
+	if err != nil {
+		t.Fatalf("DecodePackDescriptor: %v", err)
+	}
+	if descriptor.Gates != nil || descriptor.Discovery != nil {
+		t.Fatalf("the bootstrap form carries no gates or discovery surface: %+v", descriptor)
+	}
+	if len(descriptor.Assertions) != 1 || descriptor.Assertions[0].Expect != "v3.0.6" {
+		t.Fatalf("assertions = %+v", descriptor.Assertions)
+	}
+}
+
+func TestDecodePackDescriptorRepositoryGateWithoutDiscovery(t *testing.T) {
+	// A repository-scope gate needs no discovery surface.
+	document := `{"schema":"capability-pack/v1","capability":"cosign","area":"security","version":1,"summary":"A repository-scope gate needs no discovery.","provisioning":{"kind":"recipe","tool":"cosign","version":"3.0.6","environment":{},"artifacts":{"linux-amd64":{"url":"https://example.com/cosign-linux-amd64","sha256":"` + strings.Repeat("b", 64) + `"}}},"assertions":[],"gates":[{"name":"cosign-verify","command":"cosign","args":["verify"],"scope":"repository"}]}`
+	descriptor, err := DecodePackDescriptor([]byte(document))
+	if err != nil {
+		t.Fatalf("DecodePackDescriptor: %v", err)
+	}
+	if descriptor.Discovery != nil || len(descriptor.Gates) != 1 {
+		t.Fatalf("descriptor = %+v", descriptor)
+	}
+}
+
 func TestDecodePackDescriptorRejections(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -95,6 +123,8 @@ func TestDecodePackDescriptorRejections(t *testing.T) {
 		{"artifact digest malformed", strings.Replace(validPackJSON(), `"sha256":"dade9650e6b74fc7a8b986bd8717497d32f9e09cf82e479afef4977fa3085536"`, `"sha256":"abc"`, 1), "sha256 must be 64 lowercase hex"},
 		{"signature control", strings.Replace(validPackJSON(), `"signature":"https://example.com/tofu.zip.sig"`, `"signature":"https://example.com/tofu\n.zip.sig"`, 1), "signature reference must not contain control characters"},
 		{"file glob empty", strings.Replace(validPackJSON(), `"fileGlob":"**/*.tf"`, `"fileGlob":""`, 1), "roots.fileGlob must be a non-empty glob"},
+		{"discovery present but empty", strings.Replace(validPackJSON(), `"discovery":{"roots":{"fileGlob":"**/*.tf"},"excludeDirs":[".terraform"]}`, `"discovery":{}`, 1), "roots.fileGlob"},
+		{"per-root gate without discovery", strings.Replace(validPackJSON(), `"discovery":{"roots":{"fileGlob":"**/*.tf"},"excludeDirs":[".terraform"]},`, ``, 1), "per-root scope requires the discovery surface"},
 		{"file glob control", strings.Replace(validPackJSON(), `"fileGlob":"**/*.tf"`, `"fileGlob":"**/*.t\nf"`, 1), "roots.fileGlob must be a non-empty glob"},
 		{"exclude dir empty", strings.Replace(validPackJSON(), `"excludeDirs":[".terraform"]`, `"excludeDirs":[""]`, 1), "must be a non-empty directory name"},
 		{"exclude dir control", strings.Replace(validPackJSON(), `"excludeDirs":[".terraform"]`, `"excludeDirs":[".terr\naform"]`, 1), "must be a non-empty directory name"},
