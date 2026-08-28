@@ -461,6 +461,50 @@ func TestPackEngineProvisionVerifierUnknown(t *testing.T) {
 	}
 }
 
+func TestPackEngineProvisionVerifierLanePath(t *testing.T) {
+	// The lane-facing form: the engine provisions the verifier digest-only
+	// without any declared pack and returns its deterministic tool path.
+	state := &provisionState{fetch: map[string][]byte{}, fetchErr: map[string]error{}, written: map[string][]byte{}}
+	bindVerifier(t, state)
+	e := provisionEngine(state, "linux")
+	path, err := e.ProvisionVerifier(context.Background(), ".")
+	if err != nil {
+		t.Fatalf("ProvisionVerifier: %v", err)
+	}
+	want := filepath.Join("cache", "go-quality-authority", "packs", "cosign", "v1", "linux-amd64", "cosign")
+	if path != want {
+		t.Fatalf("ProvisionVerifier path = %q, want %q", path, want)
+	}
+	if string(state.written[want]) != "cosign-binary" {
+		t.Fatalf("the verifier was not installed from the raw binary: %+v", state.written)
+	}
+	proof := false
+	for _, call := range state.execCalls {
+		if strings.HasSuffix(call, " version") {
+			proof = true
+		}
+	}
+	if !proof {
+		t.Fatalf("the verifier install proof did not run: %+v", state.execCalls)
+	}
+}
+
+func TestPackEngineProvisionVerifierLaneUnknown(t *testing.T) {
+	// The lane-facing form fails closed when the registry at the pinned stand
+	// does not carry the verifier pack.
+	state := &provisionState{fetch: map[string][]byte{}, fetchErr: map[string]error{}, written: map[string][]byte{}}
+	fs := newVirtualFS()
+	fs.addFile("go.mod", "module example.com/tenant\n")
+	state.fs = fs
+	state.modules = map[string]string{sharedKernelModule: "scg", territoryHomeModule: "gqa"}
+	e := provisionEngine(state, "linux")
+	if _, err := e.ProvisionVerifier(context.Background(), "."); err == nil {
+		t.Fatal("expected the verifier-resolution finding")
+	} else if !strings.Contains(err.Error(), "provision the signature verifier") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
 func TestPackEngineProvisionVerifierWrongIdentity(t *testing.T) {
 	// A cosign pack carried by the territory registry instead of the shared
 	// kernel is not the engine-bound verifier identity.

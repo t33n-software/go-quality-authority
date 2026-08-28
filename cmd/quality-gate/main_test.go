@@ -178,3 +178,52 @@ func TestRunQualityProvisionDelegation(t *testing.T) {
 		t.Fatal("expected the delegation to surface the resolution error")
 	}
 }
+
+func TestRunProvisionVerifier(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir)
+	defer func() { runProvisionVerifier = runQualityProvisionVerifier }()
+	runProvisionVerifier = func(_ context.Context, _ quality.Config, root string, _, _ io.Writer) error {
+		if root != dir {
+			t.Fatalf("root = %q", root)
+		}
+		return nil
+	}
+	var stdout, stderr strings.Builder
+	if code := run(context.Background(), []string{"provision-verifier", "--repo=" + dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run provision-verifier = %d, want 0", code)
+	}
+}
+
+func TestRunProvisionVerifierError(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir)
+	defer func() { runProvisionVerifier = runQualityProvisionVerifier }()
+	runProvisionVerifier = func(context.Context, quality.Config, string, io.Writer, io.Writer) error {
+		return errors.New("boom")
+	}
+	var stdout, stderr strings.Builder
+	code := run(context.Background(), []string{"provision-verifier", "--repo=" + dir}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run provision-verifier with error = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "quality provision-verifier") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunMixedModeUsage(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if code := run(context.Background(), []string{"provision", "provision-verifier"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("run with mixed modes = %d, want 2", code)
+	}
+}
+
+func TestRunQualityProvisionVerifierDelegation(t *testing.T) {
+	// The delegation constructs the production orchestrator and routes the
+	// engine status to stderr; a blank root fails fast inside the verifier
+	// provisioning, which exercises the seam without running a real recipe.
+	if err := runQualityProvisionVerifier(context.Background(), testConfigForMain(), " ", io.Discard, io.Discard); err == nil {
+		t.Fatal("expected the delegation to surface the verifier provisioning error")
+	}
+}

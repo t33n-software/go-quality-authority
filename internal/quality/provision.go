@@ -49,6 +49,17 @@ func (e PackEngine) Provision(ctx context.Context, root string, packs []Resolved
 	return nil
 }
 
+// ProvisionVerifier provisions the engine-bound signature verifier for a lane
+// that must sign — the lane-facing form of the machinery-internal bootstrap.
+// The verifier is resolved against the registry at the tenant's pinned stand,
+// provisioned digest-only under the single documented bootstrap exception,
+// proven by its descriptor assertions, and returned as its deterministic tool
+// cache path. It is never a tenant declaration, a payload-provided installer
+// step, or a runner assumption.
+func (e PackEngine) ProvisionVerifier(ctx context.Context, root string) (string, error) {
+	return e.provisionVerifier(ctx, root)
+}
+
 // provisionVerifier resolves the engine-bound signature verifier against the
 // registry at the tenant's pinned stand, provisions it digest-only under the
 // single documented bootstrap exception, and runs its assertions as the

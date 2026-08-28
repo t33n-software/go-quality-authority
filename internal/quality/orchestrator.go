@@ -159,6 +159,28 @@ func (o Orchestrator) Provision(ctx context.Context, root string) error {
 	return o.Packs.Provision(ctx, root, packs)
 }
 
+// ProvisionVerifier provisions the engine-bound signature verifier for a lane
+// that must sign and prints its deterministic tool cache path as the single
+// stdout line, so the lane can place it on PATH. The verifier is
+// machinery-internal: it is resolved against the registry at the tenant's
+// pinned stand and provisioned digest-only under the single documented
+// bootstrap exception — never a tenant declaration, a payload-provided
+// installer step, or a runner assumption.
+func (o Orchestrator) ProvisionVerifier(ctx context.Context, root string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(root) == "" {
+		return errors.New("a repository root is required for verifier provisioning")
+	}
+	path, err := o.Packs.ProvisionVerifier(ctx, root)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(o.Stdout, path)
+	return nil
+}
+
 // Run builds and executes the plan, failing closed on the first gate error.
 func (o Orchestrator) Run(ctx context.Context, root string) error {
 	if ctx == nil {

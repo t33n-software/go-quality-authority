@@ -723,3 +723,81 @@ func TestOrchestratorProvisionDelegation(t *testing.T) {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
+
+func TestOrchestratorProvisionVerifier(t *testing.T) {
+	// The lane-facing verifier provisioning: the engine-bound verifier is
+	// resolved against the shared-kernel registry at the pinned stand, and its
+	// deterministic tool path is the single stdout line of the orchestrator.
+	fs := newVirtualFS()
+	o, _ := fakeOrchestrator(fs)
+	fs.addFile("go.mod", "module "+territoryHomeModule+"\n")
+	fs.addFile("scg/capabilities/security/cosign/v1/pack.json", verifierDescriptorJSON(t))
+	o.Packs.ExecuteOutput = func(_ context.Context, _ string, executable string, args []string, _ []string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if executable == "go" {
+			if module, found := strings.CutPrefix(joined, "mod download "); found {
+				if module == sharedKernelModule {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("module %s is not pinned", module)
+			}
+			if module, found := strings.CutPrefix(joined, "list -m -f {{.Dir}} "); found {
+				if module == sharedKernelModule {
+					return []byte("scg\n"), nil
+				}
+				return nil, fmt.Errorf("module %s is not pinned", module)
+			}
+			return nil, errors.New("unexpected go invocation")
+		}
+		if strings.HasPrefix(joined, "version") {
+			return []byte("GitVersion:    v3.0.6"), nil
+		}
+		return nil, errors.New("unexpected invocation")
+	}
+	o.Packs.Fetch = func(_ context.Context, url string, _ int64) ([]byte, error) {
+		if url == "https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64" {
+			return verifierBinary(), nil
+		}
+		return nil, errors.New("unexpected download")
+	}
+	var engineStatus strings.Builder
+	o.Packs.Stdout = &engineStatus
+	var stdout strings.Builder
+	o.Stdout = &stdout
+	if err := o.ProvisionVerifier(context.Background(), "."); err != nil {
+		t.Fatalf("ProvisionVerifier: %v", err)
+	}
+	want := filepath.Join("cache", "go-quality-authority", "packs", "cosign", "v1", "linux-amd64", "cosign")
+	if strings.TrimSpace(stdout.String()) != want {
+		t.Fatalf("stdout = %q, want the tool path %q", stdout.String(), want)
+	}
+	if !strings.Contains(engineStatus.String(), "provisioned cosign@1") {
+		t.Fatalf("engine status = %q", engineStatus.String())
+	}
+}
+
+func TestOrchestratorProvisionVerifierEmptyRoot(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	if err := o.ProvisionVerifier(context.Background(), " "); err == nil {
+		t.Fatal("expected the empty-root finding")
+	}
+}
+
+func TestOrchestratorProvisionVerifierNilContext(t *testing.T) {
+	// A nil context is normalized to the background context; the engine error
+	// proves the call reached the machinery.
+	o, _ := fakeOrchestrator(newVirtualFS())
+	if err := o.ProvisionVerifier(testNilContext(), "."); err == nil {
+		t.Fatal("expected the engine finding without a bound registry")
+	}
+}
+
+func TestOrchestratorProvisionVerifierEngineError(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	o.Packs.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return nil, errors.New("module not pinned")
+	}
+	if err := o.ProvisionVerifier(context.Background(), "."); err == nil {
+		t.Fatal("expected the engine finding")
+	}
+}
