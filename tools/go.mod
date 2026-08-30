@@ -11,7 +11,7 @@ tool (
 	honnef.co/go/tools/cmd/staticcheck
 )
 
-require github.com/t33n-software/go-quality-authority v0.0.0-20260821160300-23de9d9abc77 // indirect
+require github.com/t33n-software/go-quality-authority v0.0.0-20260830173326-07bd6c9bf1fa // indirect
 
 require (
 	al.essio.dev/pkg/shellescape v1.6.0 // indirect

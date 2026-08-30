@@ -149,8 +149,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/t33n-software/git-governance v1.0.2-0.20260823095005-eb9df9c719b7 h1:X+vewF/+9dDh5uHdRSeyB8L3/oFmNoiokTdy1CtN0KI=
 github.com/t33n-software/git-governance v1.0.2-0.20260823095005-eb9df9c719b7/go.mod h1:9V3pF//YsX/n+eg26NllNS7OYV9cyprlr/3J6bnkAws=
-github.com/t33n-software/go-quality-authority v0.0.0-20260821160300-23de9d9abc77 h1:MrrVkGqJbKlUjbZbX8WO/Y6LQ1nefgkSqcWfdxNa0HY=
-github.com/t33n-software/go-quality-authority v0.0.0-20260821160300-23de9d9abc77/go.mod h1:H0V5sIHFhaZy7EE2auGh9rt8lTyorCFTtedQxYKB/OY=
+github.com/t33n-software/go-quality-authority v0.0.0-20260830173326-07bd6c9bf1fa h1:LL5GYyaLt24mD6Ba7iTVkm9JZFESB5BzjuN6zx9tJ08=
+github.com/t33n-software/go-quality-authority v0.0.0-20260830173326-07bd6c9bf1fa/go.mod h1:H0V5sIHFhaZy7EE2auGh9rt8lTyorCFTtedQxYKB/OY=
 github.com/tidwall/jsonc v0.3.3 h1:RVQqL3xFfDkKKXIDsrBiVQiEpBtxoKbmMXONb2H/y2w=
 github.com/tidwall/jsonc v0.3.3/go.mod h1:dw+3CIxqHi+t8eFSpzzMlcVYxKp08UP5CD8/uSFCyJE=
 github.com/urfave/cli/v3 v3.10.1 h1:7Kx9H50hrHbRbyxgO1KP6/BcbiGRz0uYh5YyQ30JEEY=

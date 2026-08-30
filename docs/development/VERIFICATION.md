@@ -65,6 +65,22 @@ supply-chain-governance shared kernel and referenced by identity; the
 contract test in `internal/packaging` binds the canonical identity, the
 vectors, and the tool catalog to the quality core.
 
+## Self-pin currency
+
+The tools module pins this home's own module so the lane-build proof exercises
+the same pinned channel the tenants consume. The pin is a release-gate input:
+the lifecycle publish lane invokes the pinned `quality-gate` against this
+repository's configuration seam. Two fail-closed invariants keep the pin
+current, proven by `TestSelfPinTracksTheMergedLineDecoder`:
+
+1. The pin binds a commit on the merged develop line — never a
+   pull-request-only commit.
+2. The pin never predates the newest change to the configuration decoder
+   surface (`internal/quality/config.go`) on that line.
+
+A decoder change merges first and the repin follows on the merged line; every
+pull request in between fails the guard.
+
 ## Capability pack machinery
 
 The orchestrator owns the pack machinery (the pack model is owned by the

@@ -6,7 +6,9 @@ package packaging
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -90,6 +92,61 @@ func TestNegativeConformanceVectors(t *testing.T) {
 				t.Fatalf("negative vector %s must be rejected", name)
 			}
 		})
+	}
+}
+
+// gitRunsClean proves a git predicate at the repository root by exit status.
+func gitRunsClean(t *testing.T, args ...string) bool {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoRoot(t)
+	return cmd.Run() == nil
+}
+
+// gitOutput reads a git query result at the repository root.
+func gitOutput(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestSelfPinTracksTheMergedLineDecoder(t *testing.T) {
+	// The tools module pins this home's own module so the lane-build proof
+	// exercises the same pinned channel the tenants consume. The pin is a
+	// release-gate input: the lifecycle publish lane invokes the pinned
+	// quality-gate against this repository's configuration seam, so the pinned
+	// stand must always speak the current seam. Two fail-closed invariants
+	// bind that currency: the pin binds a commit on the merged develop line
+	// (never a pull-request-only commit), and the pin never predates the
+	// newest change to the configuration decoder surface on that line. A
+	// decoder change merges first and the repin follows on the merged line;
+	// every pull request in between fails this guard.
+	contents := string(readArtifact(t, "tools/go.mod"))
+	match := regexp.MustCompile(`(?m)\bgithub\.com/t33n-software/go-quality-authority\s+(v\S+)`).FindStringSubmatch(contents)
+	if match == nil {
+		t.Fatal("the tools module must pin this home's own module for the lane-build proof")
+	}
+	version := match[1]
+	pin := version
+	if pseudo := regexp.MustCompile(`^v0\.0\.0-\d{14}-([0-9a-f]{12})$`).FindStringSubmatch(version); pseudo != nil {
+		pin = pseudo[1]
+	} else {
+		pin = gitOutput(t, "rev-parse", version+"^{commit}")
+	}
+	if !gitRunsClean(t, "merge-base", "--is-ancestor", pin, "origin/develop") {
+		t.Fatalf("the self pin %q is not reachable from origin/develop; the tool pin must bind a commit on the merged develop line, never a pull-request-only commit that the cross-repo resolver cannot find", version)
+	}
+	decoder := gitOutput(t, "log", "-1", "--format=%H", "origin/develop", "--", "internal/quality/config.go")
+	if decoder == "" {
+		t.Fatal("the configuration decoder surface must exist on the merged develop line")
+	}
+	if !gitRunsClean(t, "merge-base", "--is-ancestor", decoder, pin) {
+		t.Fatalf("the self pin %q predates the current configuration decoder stand %s; the pinned quality-gate must speak the current config seam — repin the self tools on the merged line", version, decoder)
 	}
 }
 
