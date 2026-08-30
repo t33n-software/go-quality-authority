@@ -110,7 +110,7 @@ func TestToolCatalog(t *testing.T) {
 	if catalog.SchemaVersion != 1 {
 		t.Fatalf("catalog schemaVersion = %d, want 1", catalog.SchemaVersion)
 	}
-	canonical := []string{"staticcheck", "govulncheck", "lefthook", "quality-gate", "check-coverage", "git-governance"}
+	canonical := []string{"staticcheck", "govulncheck", "lefthook", "quality-gate", "check-coverage", "git-governance", "license"}
 	seen := make(map[string]bool, len(catalog.Tools))
 	for _, tool := range catalog.Tools {
 		if tool.Name == "" || tool.Module == "" || tool.Package == "" || tool.Purpose == "" {

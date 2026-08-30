@@ -37,6 +37,12 @@
       "module": "github.com/t33n-software/git-governance",
       "package": "github.com/t33n-software/git-governance/cmd/git-governance",
       "purpose": "governance CLI for the lifecycle lanes"
+    },
+    {
+      "name": "license",
+      "module": "github.com/t33n-software/license-hub",
+      "package": "github.com/t33n-software/license-hub/cmd/license",
+      "purpose": "license render and verify CLI for the canonical license instances"
     }
   ]
 }
