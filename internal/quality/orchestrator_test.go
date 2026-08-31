@@ -55,6 +55,8 @@ func fakeOrchestrator(fs *virtualFS) (Orchestrator, *[]recordedCall) {
 		Stderr:      &stderr,
 		HasToolsMod: func(string) bool { return true },
 		GoFiles:     func(string) ([]string, error) { return []string{"main.go"}, nil },
+		YAMLFiles:   func(string) ([]string, error) { return nil, nil },
+		ReadFile:    fs.readFile,
 		Packs:       fakePackEngine(fs),
 	}
 	return o, calls
@@ -125,6 +127,7 @@ func TestOrchestratorPlanContent(t *testing.T) {
 		"verify controlled toolchain",
 		"download module dependencies",
 		"check Go formatting",
+		"verify YAML wellformedness",
 		"run lint",
 		"run unit, contract, and integration tests",
 		"run race detector",
@@ -458,7 +461,7 @@ func TestGoSourceFilesError(t *testing.T) {
 
 func TestNewOrchestratorDefaults(t *testing.T) {
 	o := NewOrchestrator(testConfig(), nil, nil)
-	if o.Execute == nil || o.GoVersion == nil || o.GoFiles == nil || o.HasToolsMod == nil {
+	if o.Execute == nil || o.GoVersion == nil || o.GoFiles == nil || o.YAMLFiles == nil || o.ReadFile == nil || o.HasToolsMod == nil {
 		t.Fatal("expected the production seams to be bound")
 	}
 	if o.Stdout == nil || o.Stderr == nil {
@@ -542,6 +545,19 @@ func TestNewOrchestratorProductionSeams(t *testing.T) {
 	// The tools-module probe runs against a real tree.
 	if o.HasToolsMod(t.TempDir()) {
 		t.Fatal("expected no tools module in an empty tree")
+	}
+	// The YAML discovery and document read seams run against a real tree.
+	yamlDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(yamlDir, "doc.yml"), []byte("key: value\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	documents, err := o.YAMLFiles(yamlDir)
+	if err != nil || len(documents) != 1 {
+		t.Fatalf("production YAMLFiles seam: %v, %+v", err, documents)
+	}
+	contents, err := o.ReadFile(documents[0])
+	if err != nil || !strings.Contains(string(contents), "key: value") {
+		t.Fatalf("production ReadFile seam: %v, %q", err, contents)
 	}
 	// The pack engine is bound with its production seams.
 	if o.Packs.ExecuteOutput == nil || o.Packs.ReadFile == nil || o.Packs.Fetch == nil || o.Packs.UserCacheDir == nil {
