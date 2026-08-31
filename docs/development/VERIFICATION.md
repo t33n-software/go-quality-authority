@@ -27,19 +27,25 @@ The canonical gate set, in order:
    The orchestrator never mutates `go.mod` or `go.sum`; the module graph is a
    versioned build input.
 3. **Formatting** — `gofmt -l` over every Go source file must be empty.
-4. **Lint** — `staticcheck ./...` via the pinned tool.
-5. **Typecheck** — `go test -mod=readonly -run=^$ ./...`.
-6. **Unit, contract, and integration tests** — `go test -mod=readonly ./...`.
-7. **Race detector** — `go test -mod=readonly -race ./...`.
-8. **Static analysis** — `go vet ./...`.
-9. **Vulnerability analysis** — `govulncheck ./...` via the pinned tool;
-   fail-closed.
-10. **Boundary fuzzing** — every discovered or configured fuzz target runs
+4. **YAML wellformedness** — every convention-discovered `.yml`/`.yaml`
+   document (outside the VCS, vendor, cache, and build trees) is parsed
+   fail-closed with the admitted fleet-standard YAML library; a malformed
+   document fails the gate with its parse error, and a repository without
+   YAML documents is vacuously green. The discovery is by convention — no
+   declaration, no configuration extension.
+5. **Lint** — `staticcheck ./...` via the pinned tool.
+6. **Typecheck** — `go test -mod=readonly -run=^$ ./...`.
+7. **Unit, contract, and integration tests** — `go test -mod=readonly ./...`.
+8. **Race detector** — `go test -mod=readonly -race ./...`.
+9. **Static analysis** — `go vet ./...`.
+10. **Vulnerability analysis** — `govulncheck ./...` via the pinned tool;
+    fail-closed.
+11. **Boundary fuzzing** — every discovered or configured fuzz target runs
     with its execution budget (`-fuzztime`).
-11. **Lefthook configuration** — `lefthook validate` via the pinned tool.
-12. **Command binaries** — every `./cmd/*` binary is built with
+12. **Lefthook configuration** — `lefthook validate` via the pinned tool.
+13. **Command binaries** — every `./cmd/*` binary is built with
     `-mod=readonly -trimpath` and smoke-tested.
-13. **Coverage gate** — `check-coverage` runs in-process and enforces
+14. **Coverage gate** — `check-coverage` runs in-process and enforces
     test-source presence plus exact 100.0-percent statement coverage for every
     executable Go package.
 

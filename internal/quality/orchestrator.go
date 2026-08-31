@@ -50,6 +50,11 @@ type Orchestrator struct {
 	HasToolsMod func(root string) bool
 	// GoFiles returns the repository's Go source files for the format gate.
 	GoFiles func(root string) ([]string, error)
+	// YAMLFiles returns the repository's YAML documents for the
+	// wellformedness gate.
+	YAMLFiles func(root string) ([]string, error)
+	// ReadFile reads a discovered document for the in-process proofs.
+	ReadFile func(string) ([]byte, error)
 	// Packs is the capability-pack machinery: resolution, provisioning, and
 	// the pack gate plan.
 	Packs PackEngine
@@ -83,8 +88,10 @@ func NewOrchestrator(config Config, stdout, stderr io.Writer) Orchestrator {
 			_, err := os.Stat(filepath.Join(root, "tools", "go.mod"))
 			return err == nil
 		},
-		GoFiles: GoSourceFiles,
-		Packs:   NewPackEngine(stdout, stderr),
+		GoFiles:   GoSourceFiles,
+		YAMLFiles: YAMLFiles,
+		ReadFile:  os.ReadFile,
+		Packs:     NewPackEngine(stdout, stderr),
 	}
 }
 
@@ -122,6 +129,10 @@ func (o Orchestrator) Plan(ctx context.Context, root string) ([]Step, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list Go sources: %w", err)
 	}
+	yamlDocuments, err := o.YAMLFiles(root)
+	if err != nil {
+		return nil, fmt.Errorf("list YAML documents: %w", err)
+	}
 	packSteps, err := o.Packs.Steps(root, packs)
 	if err != nil {
 		return nil, err
@@ -134,6 +145,12 @@ func (o Orchestrator) Plan(ctx context.Context, root string) ([]Step, error) {
 	steps = append(steps, moduleVerificationSteps(o.HasToolsMod(root))...)
 	steps = append(steps, Step{
 		Name: "check Go formatting", Executable: "gofmt", Args: append([]string{"-l"}, goFiles...),
+	})
+	// The wellformedness gate is a core gate: every convention-discovered
+	// YAML document is parsed fail-closed, and a repository without YAML
+	// documents is vacuously green.
+	steps = append(steps, Step{
+		Name: "verify YAML wellformedness", Args: yamlDocuments,
 	})
 	steps = append(steps, canonicalAnalysisSteps(o.HasToolsMod(root))...)
 	steps = append(steps, packSteps...)
@@ -222,6 +239,9 @@ func (o Orchestrator) runStep(ctx context.Context, root string, step Step) error
 	}
 	if step.Name == "check Go formatting" {
 		return o.verifyFormatting(stepCtx, dir, step.Args)
+	}
+	if step.Name == "verify YAML wellformedness" {
+		return o.verifyYAMLWellformedness(step.Args)
 	}
 	if step.Expect != "" {
 		output, err := o.ExecuteOutput(stepCtx, dir, step.Executable, step.Args, step.Env)
