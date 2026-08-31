@@ -17,6 +17,8 @@ does not rely on any external governance repository or unpublished rule set.
 |---|---|---|
 | Local repository | VERIFIED | `main` is initialized; every audit and release gate begins by checking the current Git status |
 | Go module | VERIFIED | `github.com/t33n-software/go-quality-authority`, language Go 1.26 and pinned toolchain Go 1.26.6 |
+| License instance | VERIFIED | the tenant values `license.values.json` and the digest-pinned lock `license.lock.json` (template `license-hub/templates/custom/norepublish/NoRepublish-1.0.0.hbs`, version 1.0.0) render `LICENSE` and `LICENSES/LicenseRef-go-quality-authority-NoRepublish-1.0.txt`; the committed instance is proven byte-identical against the canonical render through the license-hub CLI (`verify` reports the instance matches the canonical render) |
+| Code ownership contract | VERIFIED | `.github/CODEOWNERS` binds the default owner `@CyberT33N`; the materialization is byte-identical to the governed reference instance (SHA-256 proven) |
 
 ## Core capabilities
 
