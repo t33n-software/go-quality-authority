@@ -1,0 +1,9 @@
+# Repository ownership contract for the governed shared lines.
+#
+# The default entry maps every path to the maintainer of this
+# single-maintainer organization. GitHub CODEOWNERS entries may reference
+# users, organization teams (@org/team), or email addresses; a bare
+# organization cannot own code. A team reference is added by a governed
+# change once the organization establishes its first team.
+
+* @CyberT33N
