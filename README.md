@@ -16,7 +16,7 @@ schema copy.
 | Quality-gate orchestrator | `cmd/quality-gate/` | Reads the schema-validated config seam, asserts the controlled toolchain, executes the canonical gate set, resolves and provisions the declared capability packs, and discovers command binaries and fuzz targets by convention |
 | Coverage gate | `cmd/check-coverage/` | Enforces test-source presence and exact 100-percent statement coverage for every executable Go package |
 | Config seam | `quality-gate-config/v4` in `supply-chain-governance` | The centralized, versioned, strictly decoded configuration seam definition, referenced by identity |
-| Tool catalog | `catalog/tools.json` | The canonical set of admitted Go tools consumed as `tool` directives |
+| Tool catalog | `catalog/tools.json` | The canonical set of admitted Go tools consumed as `tool` directives; its schema document `catalog/tools.schema.json` carries the exact canonical `$id` and the strict format description |
 | Conformance vectors | `conformance/{positive,negative}/` | The proof set for the configuration seam: every acceptance and every rejection |
 
 ## Consumption

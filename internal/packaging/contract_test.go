@@ -184,3 +184,108 @@ func TestToolCatalog(t *testing.T) {
 		}
 	}
 }
+
+// TestToolCatalogSchemaDocument proves the catalog's schema document: the
+// catalog references it by identity (asserted, never dereferenced), and the
+// document is owned and shipped by this home. The test binds the document's
+// exact canonical $id, its strict form, and the catalog's conformity against
+// it — fail-closed, without dereferencing the reference.
+func TestToolCatalogSchemaDocument(t *testing.T) {
+	const identity = "https://raw.githubusercontent.com/t33n-software/go-quality-authority/main/catalog/tools.schema.json"
+
+	var document map[string]any
+	if err := json.Unmarshal(readArtifact(t, "catalog/tools.schema.json"), &document); err != nil {
+		t.Fatalf("the catalog schema document is not valid JSON: %v", err)
+	}
+	if document["$id"] != identity {
+		t.Fatalf("the catalog schema $id = %v, want the exact canonical identity", document["$id"])
+	}
+	if document["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
+		t.Fatalf("the catalog schema must declare the 2020-12 meta-schema, got %v", document["$schema"])
+	}
+	if document["additionalProperties"] != false {
+		t.Fatal("the catalog schema must reject unknown properties")
+	}
+
+	stringSet := func(value any) map[string]bool {
+		set := make(map[string]bool)
+		if items, ok := value.([]any); ok {
+			for _, item := range items {
+				if text, ok := item.(string); ok {
+					set[text] = true
+				}
+			}
+		}
+		return set
+	}
+	keySet := func(value any) map[string]bool {
+		set := make(map[string]bool)
+		if object, ok := value.(map[string]any); ok {
+			for name := range object {
+				set[name] = true
+			}
+		}
+		return set
+	}
+	assertSet := func(label string, got map[string]bool, want ...string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s = %v, want exactly %v", label, got, want)
+		}
+		for _, item := range want {
+			if !got[item] {
+				t.Fatalf("%s misses %q (has %v)", label, item, got)
+			}
+		}
+	}
+
+	assertSet("the schema's required set", stringSet(document["required"]), "$schema", "schemaVersion", "tools")
+	assertSet("the schema's property set", keySet(document["properties"]), "$schema", "schemaVersion", "tools")
+
+	properties, ok := document["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("the catalog schema must declare its properties")
+	}
+	schemaReference, ok := properties["$schema"].(map[string]any)
+	if !ok || schemaReference["const"] != identity {
+		t.Fatalf("the $schema property must pin the exact canonical identity as const, got %v", properties["$schema"])
+	}
+	schemaVersion, ok := properties["schemaVersion"].(map[string]any)
+	if !ok || schemaVersion["const"] != float64(1) {
+		t.Fatalf("the schemaVersion property must pin const 1, got %v", properties["schemaVersion"])
+	}
+	tools, ok := properties["tools"].(map[string]any)
+	if !ok || tools["type"] != "array" {
+		t.Fatalf("the tools property must be an array, got %v", properties["tools"])
+	}
+	items, ok := tools["items"].(map[string]any)
+	if !ok || items["type"] != "object" || items["additionalProperties"] != false {
+		t.Fatalf("the tools items must be strictly decoded objects, got %v", tools["items"])
+	}
+	assertSet("the tools item required set", stringSet(items["required"]), "name", "module", "package", "purpose")
+	assertSet("the tools item property set", keySet(items["properties"]), "name", "module", "package", "purpose")
+
+	// The conformity proof: the catalog data matches the document fail-closed.
+	var catalog map[string]any
+	if err := json.Unmarshal(readArtifact(t, "catalog/tools.json"), &catalog); err != nil {
+		t.Fatalf("the tool catalog is not valid JSON: %v", err)
+	}
+	if catalog["$schema"] != identity {
+		t.Fatalf("the catalog's $schema reference = %v, want the schema document's identity", catalog["$schema"])
+	}
+	assertSet("the catalog's top-level key set", keySet(catalog), "$schema", "schemaVersion", "tools")
+	if catalog["schemaVersion"] != float64(1) {
+		t.Fatalf("the catalog's schemaVersion = %v, want the pinned const 1", catalog["schemaVersion"])
+	}
+	entries, ok := catalog["tools"].([]any)
+	if !ok || len(entries) == 0 {
+		t.Fatal("the catalog must carry a non-empty tools array")
+	}
+	for _, entry := range entries {
+		tool, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("every tool entry must be an object, got %v", entry)
+		}
+		assertSet("the tool entry key set", keySet(tool), "name", "module", "package", "purpose")
+	}
+}

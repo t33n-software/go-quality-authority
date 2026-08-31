@@ -63,7 +63,10 @@ The configuration seam is proven by the conformance vectors:
 seam definition (`quality-gate-config/v4`) is owned by the
 supply-chain-governance shared kernel and referenced by identity; the
 contract test in `internal/packaging` binds the canonical identity, the
-vectors, and the tool catalog to the quality core.
+vectors, and the tool catalog to the quality core. The tool catalog's schema
+document (`catalog/tools.schema.json`) is proven the same way: the contract
+tests bind its exact canonical `$id` and prove the catalog's conformity
+against the document fail-closed, without dereferencing the reference.
 
 ## Self-pin currency
 
