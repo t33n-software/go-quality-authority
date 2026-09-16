@@ -34,6 +34,7 @@ func testConfig() Config {
 func fakeOrchestrator(fs *virtualFS) (Orchestrator, *[]recordedCall) {
 	calls := &[]recordedCall{}
 	var stdout, stderr strings.Builder
+	stagingCounter := 0
 	o := Orchestrator{
 		Config:   testConfig(),
 		Discover: discovererFor(fs),
@@ -57,7 +58,17 @@ func fakeOrchestrator(fs *virtualFS) (Orchestrator, *[]recordedCall) {
 		GoFiles:     func(string) ([]string, error) { return []string{"main.go"}, nil },
 		YAMLFiles:   func(string) ([]string, error) { return nil, nil },
 		ReadFile:    fs.readFile,
-		Packs:       fakePackEngine(fs),
+		TempDir: func(pattern string) (string, error) {
+			stagingCounter++
+			return fmt.Sprintf("staging-%d", stagingCounter), nil
+		},
+		MkdirAll: func(string, os.FileMode) error { return nil },
+		WriteFile: func(path string, data []byte, _ os.FileMode) error {
+			fs.addFile(path, string(data))
+			return nil
+		},
+		RemoveAll: func(string) error { return nil },
+		Packs:     fakePackEngine(fs),
 	}
 	return o, calls
 }
@@ -815,5 +826,279 @@ func TestOrchestratorProvisionVerifierEngineError(t *testing.T) {
 	}
 	if err := o.ProvisionVerifier(context.Background(), "."); err == nil {
 		t.Fatal("expected the engine finding")
+	}
+}
+
+// TestOrchestratorRunStagedPackGates proves the clean-staging execution
+// environment: every pack gate executes against the materialized staging of
+// its unit, every unit is materialized lazily once, and every unit is
+// released — at the transition and at the end of the plan.
+func TestOrchestratorRunStagedPackGates(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	fs.addFile("stacks/b/main.tf", "resource {}\n")
+	o, calls := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	toolPath, err := o.Packs.ToolPath(pack)
+	if err != nil {
+		t.Fatalf("ToolPath: %v", err)
+	}
+	o.ExecuteOutput = func(_ context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		switch executable {
+		case "git":
+			return []byte("stacks/a/main.tf\x00stacks/b/main.tf\x00"), nil
+		case "gofmt":
+			return []byte(""), nil
+		default:
+			return []byte("OpenTofu v1.12.5"), nil
+		}
+	}
+	removed := []string{}
+	o.RemoveAll = func(path string) error {
+		removed = append(removed, path)
+		return nil
+	}
+	if err := o.Run(context.Background(), "."); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var formatDir, validateA, validateB string
+	gitCalls := 0
+	for _, call := range *calls {
+		if call.Executable == "git" {
+			gitCalls++
+		}
+		if call.Executable == toolPath && len(call.Args) > 0 {
+			switch call.Args[0] {
+			case "fmt":
+				formatDir = call.Dir
+			case "validate":
+				if validateA == "" {
+					validateA = call.Dir
+				} else {
+					validateB = call.Dir
+				}
+			}
+		}
+	}
+	if formatDir != "staging-1" {
+		t.Fatalf("the repository gate must execute against the repository staging, got %q", formatDir)
+	}
+	if validateA != filepath.Join("staging-2", "stacks", "a") || validateB != filepath.Join("staging-3", "stacks", "b") {
+		t.Fatalf("the per-root gates must execute against their root's staging, got %q and %q", validateA, validateB)
+	}
+	if gitCalls != 3 {
+		t.Fatalf("every unit is materialized exactly once, got %d enumerations", gitCalls)
+	}
+	if strings.Join(removed, ",") != "staging-1,staging-2,staging-3" {
+		t.Fatalf("every unit is released in order, got %+v", removed)
+	}
+}
+
+// TestOrchestratorRunStepInProcess proves the engine-machinery dispatch: the
+// step runs in-process with the resolved directory, and its failure wraps the
+// step name.
+func TestOrchestratorRunStepInProcess(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	var gotDir string
+	step := Step{
+		Name: "engine machinery",
+		Dir:  "tools",
+		inProcess: func(ctx context.Context, dir string) error {
+			gotDir = dir
+			return nil
+		},
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep: %v", err)
+	}
+	if gotDir != filepath.Join(".", "tools") {
+		t.Fatalf("the in-process directory = %q", gotDir)
+	}
+	step.inProcess = func(context.Context, string) error { return errors.New("boom") }
+	err := o.runStep(context.Background(), ".", step)
+	if err == nil || !strings.Contains(err.Error(), "engine machinery: boom") {
+		t.Fatalf("the in-process failure must wrap the step name: %v", err)
+	}
+}
+
+// TestOrchestratorRunStepStagedInProcess proves the engine-machinery dispatch
+// against a clean staging: the handler receives the staged directory of its
+// unit.
+func TestOrchestratorRunStepStagedInProcess(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	o, _ := fakeOrchestrator(fs)
+	o.ExecuteOutput = func(_ context.Context, _ string, executable string, args []string, _ []string) ([]byte, error) {
+		if executable == "git" {
+			return []byte("stacks/a/main.tf\x00"), nil
+		}
+		return nil, errors.New("unexpected process invocation")
+	}
+	var gotDir string
+	unit := &packStaging{scope: "stacks/a"}
+	step := Step{
+		Name:    "engine machinery (stacks/a)",
+		Dir:     "stacks/a",
+		staging: unit,
+		inProcess: func(ctx context.Context, dir string) error {
+			gotDir = dir
+			return nil
+		},
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep: %v", err)
+	}
+	if gotDir != filepath.Join("staging-1", "stacks", "a") {
+		t.Fatalf("the staged in-process directory = %q", gotDir)
+	}
+	// The staged content carries the committed form of the root.
+	contents, err := o.ReadFile(filepath.Join("staging-1", "stacks", "a", "main.tf"))
+	if err != nil || string(contents) != "resource {}\n" {
+		t.Fatalf("the staged content = %q, %v", contents, err)
+	}
+}
+
+// TestOrchestratorRunStagingCleanupOnFailure proves the fail-closed staging
+// lifecycle: a failed sequence still releases its active unit.
+func TestOrchestratorRunStagingCleanupOnFailure(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	o, calls := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	toolPath, err := o.Packs.ToolPath(pack)
+	if err != nil {
+		t.Fatalf("ToolPath: %v", err)
+	}
+	o.ExecuteOutput = func(_ context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		switch executable {
+		case "git":
+			return []byte("stacks/a/main.tf\x00"), nil
+		case "gofmt":
+			return []byte(""), nil
+		default:
+			return []byte("OpenTofu v1.12.5"), nil
+		}
+	}
+	o.Execute = func(_ context.Context, dir, executable string, args []string, env []string) error {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		if executable == toolPath && len(args) > 0 && args[0] == "validate" {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	removed := []string{}
+	o.RemoveAll = func(path string) error {
+		removed = append(removed, path)
+		return nil
+	}
+	if err := o.Run(context.Background(), "."); err == nil {
+		t.Fatal("expected the gate failure")
+	}
+	if strings.Join(removed, ",") != "staging-1,staging-2" {
+		t.Fatalf("the repository unit and the active root unit are released, got %+v", removed)
+	}
+}
+
+// TestOrchestratorRunStagingTransitionCleanupError proves the transition
+// cleanup is fail-closed.
+func TestOrchestratorRunStagingTransitionCleanupError(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	o, calls := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	o.ExecuteOutput = func(_ context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		switch executable {
+		case "git":
+			return []byte("stacks/a/main.tf\x00"), nil
+		case "gofmt":
+			return []byte(""), nil
+		default:
+			return []byte("OpenTofu v1.12.5"), nil
+		}
+	}
+	o.RemoveAll = func(string) error { return errors.New("boom") }
+	err := o.Run(context.Background(), ".")
+	if err == nil || !strings.Contains(err.Error(), "release the clean staging") {
+		t.Fatalf("expected the cleanup finding, got %v", err)
+	}
+}
+
+// TestOrchestratorRunStagingFinalCleanupError proves the final cleanup of the
+// plan is fail-closed.
+func TestOrchestratorRunStagingFinalCleanupError(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	o, calls := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	o.ExecuteOutput = func(_ context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		switch executable {
+		case "git":
+			return []byte("stacks/a/main.tf\x00"), nil
+		case "gofmt":
+			return []byte(""), nil
+		default:
+			return []byte("OpenTofu v1.12.5"), nil
+		}
+	}
+	o.RemoveAll = func(path string) error {
+		if path == "staging-2" {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	err := o.Run(context.Background(), ".")
+	if err == nil || !strings.Contains(err.Error(), "release the clean staging") {
+		t.Fatalf("expected the final cleanup finding, got %v", err)
+	}
+}
+
+// TestOrchestratorRunStagingMaterializeError proves a staging failure fails
+// the step closed.
+func TestOrchestratorRunStagingMaterializeError(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	o.TempDir = func(string) (string, error) { return "", errors.New("boom") }
+	unit := &packStaging{scope: "stacks/a"}
+	step := Step{
+		Name:    "opentofu-validate (stacks/a)",
+		Dir:     "stacks/a",
+		staging: unit,
+	}
+	err := o.runStep(context.Background(), ".", step)
+	if err == nil || !strings.Contains(err.Error(), "create the clean staging") {
+		t.Fatalf("expected the materialize finding, got %v", err)
+	}
+}
+
+// TestNewOrchestratorStagingSeams proves the production staging seams are
+// bound and operate against a real tree.
+func TestNewOrchestratorStagingSeams(t *testing.T) {
+	o := NewOrchestrator(testConfig(), io.Discard, io.Discard)
+	if o.TempDir == nil || o.MkdirAll == nil || o.WriteFile == nil || o.RemoveAll == nil {
+		t.Fatal("expected the staging seams to be bound")
+	}
+	dir, err := o.TempDir("staging-seam-")
+	if err != nil {
+		t.Fatalf("TempDir: %v", err)
+	}
+	if err := o.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := o.WriteFile(filepath.Join(dir, "nested", "x.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	contents, err := o.ReadFile(filepath.Join(dir, "nested", "x.txt"))
+	if err != nil || string(contents) != "x" {
+		t.Fatalf("ReadFile: %v, %q", err, contents)
+	}
+	if err := o.RemoveAll(dir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
 	}
 }

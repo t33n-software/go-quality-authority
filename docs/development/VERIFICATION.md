@@ -127,11 +127,43 @@ and covered by same-package whitebox tests:
    `quality-gate provision`.
 4. **Composition** — the plan composes deterministically: the core gates,
    then the pack gates, then the project gates. A pack's assertions run before
-   any of its gates, a repository gate runs once at the root, and a per-root
-   gate runs once per discovered root (the parent directories of the
-   discovery glob's matches, minus the excluded directory names). Every pack
-   command references the provisioned tool, and the pack's enforced
-   environment reaches the gate processes.
+   any of its gates, a repository gate runs once at the root, and the per-root
+   gates are grouped by discovered root (the parent directories of the
+   discovery glob's matches, minus the excluded directory names), preserving
+   the descriptor's gate order within each root. Every pack command references
+   the provisioned tool, and the pack's enforced environment reaches the gate
+   processes.
+5. **Gate execution environment** — every pack gate executes against the
+   clean staging of its execution unit (`internal/quality/staging.go`):
+   exactly the repository's tracked files (the VCS index oracle, which never
+   carries execution residue such as `.terraform/`, `*.tfstate`, or
+   `*.tfvars`), copied structure-preserving into an isolated directory — one
+   unit per pack for the repository-scope gates and one per discovered root
+   for the per-root gate sequence, so a root's initialization residue never
+   reaches another root. The staging is materialized lazily on the unit's
+   first step and released fail-closed at every transition and at the end of
+   the plan — identically on a fresh CI checkout and on a local working
+   directory, and identically before and after any execution.
+6. **Pack-major gate semantics** — the engine-versioned support for gate
+   semantics that no tool invocation can express
+   (`internal/quality/packsemantics.go`): a capability with versioned gate
+   semantics fails closed at a major the pinned engine does not support (the
+   fail-closed tenant-flip rule), and a pack whose descriptor lacks the
+   behavioral gate its semantics bind fails closed. For the OpenTofu pack's
+   value-evaluation major, the engine injects the static evaluation-safety
+   guard before every root's gate sequence
+   (`internal/quality/evaluationsafety.go`): every custom-condition body of
+   the root's committed form is proven evaluation-safe against the declared
+   variable types through the real HCL parser and the closed-world function
+   surface (the fleet's documented built-ins, each signature-checked against
+   the declared types, including for unknown values and for-expression bodies
+   proven against the declared element types) — a parse error, an unknown
+   function, an unresolvable reference, or a type error fails closed. The
+   behavioral gate's execution form is the offline-capability classification:
+   an encryption-carrying root (its initialization resolves encryption key
+   material) never executes offline, and the deterministic deferral record is
+   the gate output — never a silent skip; an offline-capable root executes
+   the behavioral gate against the clean staging.
 
 ## Whitebox testing
 
