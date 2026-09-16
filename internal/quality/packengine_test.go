@@ -612,6 +612,22 @@ func TestPackEngineSteps(t *testing.T) {
 	if steps[3].Timeout <= 0 {
 		t.Fatalf("the gate timeout must resolve: %+v", steps[3])
 	}
+	// Every pack gate carries its clean-staging execution unit: the
+	// repository gate its own, and every root's gate sequence its own.
+	if steps[1].staging == nil || steps[1].staging.scope != "repository" {
+		t.Fatalf("the repository gate must carry the repository staging unit: %+v", steps[1])
+	}
+	if steps[2].staging == nil || steps[2].staging.scope != "stacks/a" || steps[3].staging == nil || steps[3].staging.scope != "stacks/b" {
+		t.Fatalf("the per-root gates must carry their root's staging unit: %+v", steps)
+	}
+	if steps[2].staging == steps[3].staging {
+		t.Fatal("every root's gate sequence carries its own staging unit")
+	}
+	// The assertion is an environment proof, never a gate of the committed
+	// form: it carries no staging unit.
+	if steps[0].staging != nil {
+		t.Fatalf("the assertion carries no staging unit: %+v", steps[0])
+	}
 }
 
 func TestPackEngineStepsNotProvisioned(t *testing.T) {
@@ -693,6 +709,134 @@ func TestPackEngineStepsEmpty(t *testing.T) {
 	}
 	if len(steps) != 0 {
 		t.Fatalf("steps = %+v", steps)
+	}
+}
+
+// TestPackEngineStepsGateSemanticsV2 proves the plan of the value-evaluation
+// pack major: the evaluation-safety guard precedes the root's static gates,
+// and the behavioral gate carries its engine-bound execution form.
+func TestPackEngineStepsGateSemanticsV2(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	e := fakePackEngine(fs)
+	// The behavioral machinery executes the provisioned tool through the
+	// engine seam; the binding precedes the plan because the machinery
+	// closures bind the engine at plan time.
+	e.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return []byte("1 passed, 0 failed"), nil
+	}
+	pack := testResolvedPackV2()
+	provisionTool(t, &e, pack)
+	steps, err := e.Steps(".", []ResolvedPack{pack})
+	if err != nil {
+		t.Fatalf("Steps: %v", err)
+	}
+	if len(steps) != 6 {
+		t.Fatalf("steps = %+v", steps)
+	}
+	names := make([]string, 0, len(steps))
+	for _, step := range steps {
+		names = append(names, step.Name)
+	}
+	want := []string{
+		"opentofu-version",
+		"opentofu-fmt-check",
+		"opentofu-evaluation-safety (stacks/a)",
+		"opentofu-init (stacks/a)",
+		"opentofu-validate (stacks/a)",
+		"opentofu-test (stacks/a)",
+	}
+	if strings.Join(names, "|") != strings.Join(want, "|") {
+		t.Fatalf("the v2 plan = %q", strings.Join(names, "|"))
+	}
+	if steps[2].inProcess == nil || steps[5].inProcess == nil {
+		t.Fatalf("the guard and the behavioral gate are engine machinery: %+v", steps)
+	}
+	if steps[3].inProcess != nil || steps[4].inProcess != nil {
+		t.Fatalf("the static gates stay tool invocations: %+v", steps)
+	}
+	if steps[2].staging == nil || steps[2].staging != steps[3].staging || steps[3].staging != steps[4].staging || steps[4].staging != steps[5].staging {
+		t.Fatalf("the root's gate sequence shares its staging unit: %+v", steps)
+	}
+	if steps[1].staging == nil || steps[1].staging.scope != "repository" || steps[1].staging == steps[2].staging {
+		t.Fatalf("the repository gate carries its own staging unit: %+v", steps[1])
+	}
+	// The machinery closures execute against the bound directory.
+	if err := steps[2].inProcess(context.Background(), "."); err != nil {
+		t.Fatalf("the guard machinery step: %v", err)
+	}
+	if err := steps[5].inProcess(context.Background(), "."); err != nil {
+		t.Fatalf("the behavioral machinery step: %v", err)
+	}
+}
+
+// TestPackEngineStepsUnsupportedMajor proves the fail-closed flip rule: a
+// pack major whose gate semantics the engine does not support never plans.
+func TestPackEngineStepsUnsupportedMajor(t *testing.T) {
+	e := fakePackEngine(newVirtualFS())
+	pack := testResolvedPackV2()
+	pack.Reference = "opentofu@3"
+	pack.Descriptor.Version = 3
+	provisionTool(t, &e, pack)
+	_, err := e.Steps(".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the unsupported-major finding")
+	}
+	if !strings.Contains(err.Error(), "does not support") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+// TestPackEngineStepsBehavioralGateMissing proves the fail-closed contract
+// breach: a pack whose descriptor lacks the behavioral gate its engine-bound
+// semantics require never plans.
+func TestPackEngineStepsBehavioralGateMissing(t *testing.T) {
+	e := fakePackEngine(newVirtualFS())
+	pack := testResolvedPackV2()
+	pack.Descriptor.Gates = pack.Descriptor.Gates[:3]
+	provisionTool(t, &e, pack)
+	_, err := e.Steps(".", []ResolvedPack{pack})
+	if err == nil {
+		t.Fatal("expected the missing-behavioral-gate finding")
+	}
+	if !strings.Contains(err.Error(), "does not carry the behavioral gate") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+// TestPackEngineStepsRootMajorGrouping proves the per-root gates are grouped
+// by root — the gate sequence of a root shares its staging, so the plan never
+// interleaves two roots.
+func TestPackEngineStepsRootMajorGrouping(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	fs.addFile("stacks/b/main.tf", "resource {}\n")
+	e := fakePackEngine(fs)
+	pack := testResolvedPack()
+	pack.Descriptor.Capability = "demo"
+	pack.Reference = "demo@1"
+	pack.Descriptor.Gates = []PackGate{
+		{Name: "demo-init", Command: "tofu", Args: []string{"init"}, Scope: PackScopePerRoot},
+		{Name: "demo-validate", Command: "tofu", Args: []string{"validate"}, Scope: PackScopePerRoot},
+	}
+	provisionTool(t, &e, pack)
+	steps, err := e.Steps(".", []ResolvedPack{pack})
+	if err != nil {
+		t.Fatalf("Steps: %v", err)
+	}
+	names := make([]string, 0, len(steps))
+	for _, step := range steps {
+		names = append(names, step.Name)
+	}
+	want := []string{"opentofu-version", "demo-init (stacks/a)", "demo-validate (stacks/a)", "demo-init (stacks/b)", "demo-validate (stacks/b)"}
+	if strings.Join(names, "|") != strings.Join(want, "|") {
+		t.Fatalf("the root-major plan = %q", strings.Join(names, "|"))
+	}
+	// A capability without engine-bound semantics carries no machinery steps.
+	for _, step := range steps {
+		if step.inProcess != nil {
+			t.Fatalf("an unregistered capability carries no engine machinery: %+v", step)
+		}
 	}
 }
 

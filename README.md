@@ -75,6 +75,19 @@ go tool -modfile tools/go.mod quality-gate provision
 go tool -modfile tools/go.mod quality-gate
 ```
 
+Every pack gate executes against a clean staging of the tracked files of its
+execution unit — never the residue-carrying working directory — provided
+uniformly by the orchestrator, identically on a fresh CI checkout and on a
+local working directory. A pack major whose engine-level gate semantics the
+pinned orchestrator does not support fails closed; a tenant flips its pinned
+major through a reviewed change once the orchestrator supports it. For the
+OpenTofu pack's value-evaluation major, the orchestrator proves every custom
+condition of every root evaluation-safe against the declared variable types
+(the static guard, over the real HCL parser and a closed-world function
+surface), and the behavioral proof of an encryption-carrying root is deferred
+to the governed execution window with a deterministic gate record — never
+silently skipped.
+
 The pack model is owned by the capability-pack contract; this home owns the
 orchestrator machinery.
 

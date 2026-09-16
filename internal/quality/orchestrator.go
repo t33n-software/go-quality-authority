@@ -27,6 +27,13 @@ type Step struct {
 	Env        []string
 	Expect     string
 	Timeout    time.Duration
+	// staging binds the step to its clean-staging execution unit; nil for the
+	// core and project gates, which run against the working directory.
+	staging *packStaging
+	// inProcess marks an engine-machinery step executed inside the
+	// orchestrator process with the resolved directory — the execution form
+	// of the pack-major gate semantics that no tool invocation can express.
+	inProcess func(ctx context.Context, dir string) error
 }
 
 // Orchestrator runs the canonical quality gate set for a tenant repository.
@@ -55,6 +62,12 @@ type Orchestrator struct {
 	YAMLFiles func(root string) ([]string, error)
 	// ReadFile reads a discovered document for the in-process proofs.
 	ReadFile func(string) ([]byte, error)
+	// TempDir, MkdirAll, WriteFile, and RemoveAll are the seams of the clean
+	// staging execution environment of the pack gates.
+	TempDir   func(pattern string) (string, error)
+	MkdirAll  func(string, os.FileMode) error
+	WriteFile func(string, []byte, os.FileMode) error
+	RemoveAll func(string) error
 	// Packs is the capability-pack machinery: resolution, provisioning, and
 	// the pack gate plan.
 	Packs PackEngine
@@ -91,6 +104,12 @@ func NewOrchestrator(config Config, stdout, stderr io.Writer) Orchestrator {
 		GoFiles:   GoSourceFiles,
 		YAMLFiles: YAMLFiles,
 		ReadFile:  os.ReadFile,
+		TempDir: func(pattern string) (string, error) {
+			return os.MkdirTemp("", pattern)
+		},
+		MkdirAll:  os.MkdirAll,
+		WriteFile: os.WriteFile,
+		RemoveAll: os.RemoveAll,
 		Packs:     NewPackEngine(stdout, stderr),
 	}
 }
@@ -199,7 +218,10 @@ func (o Orchestrator) ProvisionVerifier(ctx context.Context, root string) error 
 }
 
 // Run builds and executes the plan, failing closed on the first gate error.
-func (o Orchestrator) Run(ctx context.Context, root string) error {
+// The clean-staging lifecycle of the pack gates is fail-closed: every unit is
+// released when the plan leaves it, a failed sequence still releases its
+// active unit, and a cleanup failure fails the run.
+func (o Orchestrator) Run(ctx context.Context, root string) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -207,7 +229,21 @@ func (o Orchestrator) Run(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
+	var active *packStaging
+	defer func() {
+		if active != nil {
+			err = errors.Join(err, o.unstageStaging(active))
+		}
+	}()
 	for _, step := range steps {
+		if step.staging != active {
+			if active != nil {
+				if cleanupErr := o.unstageStaging(active); cleanupErr != nil {
+					return cleanupErr
+				}
+			}
+			active = step.staging
+		}
 		if err := o.runStep(ctx, root, step); err != nil {
 			return err
 		}
@@ -221,19 +257,28 @@ func (o Orchestrator) Run(ctx context.Context, root string) error {
 	return nil
 }
 
-// runStep executes one plan step with its timeout and working directory.
+// runStep executes one plan step with its timeout and working directory. A
+// step bound to a clean-staging unit executes against the materialized
+// staging of its unit — lazily materialized on the unit's first step — and an
+// engine-machinery step runs in-process with the resolved directory.
 func (o Orchestrator) runStep(ctx context.Context, root string, step Step) error {
 	fmt.Fprintln(o.Stdout, "==>", step.Name)
-	dir := root
-	if step.Dir != "" {
-		dir = filepath.Join(root, step.Dir)
-	}
 	timeout := step.Timeout
 	if timeout <= 0 {
 		timeout, _ = GateTimeout("")
 	}
 	stepCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	dir := root
+	if step.staging != nil {
+		if err := o.materializeStaging(stepCtx, root, step.staging); err != nil {
+			return fmt.Errorf("%s: %w", step.Name, err)
+		}
+		dir = step.staging.dir
+	}
+	if step.Dir != "" {
+		dir = filepath.Join(dir, step.Dir)
+	}
 	if step.Name == "verify controlled toolchain" {
 		return o.verifyToolchain(stepCtx, dir)
 	}
@@ -242,6 +287,12 @@ func (o Orchestrator) runStep(ctx context.Context, root string, step Step) error
 	}
 	if step.Name == "verify YAML wellformedness" {
 		return o.verifyYAMLWellformedness(step.Args)
+	}
+	if step.inProcess != nil {
+		if err := step.inProcess(stepCtx, dir); err != nil {
+			return fmt.Errorf("%s: %w", step.Name, err)
+		}
+		return nil
 	}
 	if step.Expect != "" {
 		output, err := o.ExecuteOutput(stepCtx, dir, step.Executable, step.Args, step.Env)

@@ -482,9 +482,17 @@ func (e PackEngine) toolExecutable(pack ResolvedPack) string {
 
 // Steps builds the deterministic pack gate plan: for every resolved pack in
 // declaration order, the pack's assertions precede its gates; a repository
-// gate runs once at the root, and a per-root gate runs once per discovered
-// root. Every pack command must reference the provisioned tool, and a pack
-// whose tool is not provisioned fails closed.
+// gate runs once at the root, and the per-root gates are grouped by
+// discovered root, preserving the descriptor's gate order within each root.
+// Every pack command must reference the provisioned tool, and a pack whose
+// tool is not provisioned fails closed.
+//
+// Every pack gate executes against the clean staging of its execution unit —
+// one unit per pack for the repository-scope gates and one unit per
+// discovered root for the per-root gate sequence — never against the
+// residue-carrying working directory. The engine-versioned gate semantics of
+// a pack major inject their machinery into the plan; a pack major whose gate
+// semantics this engine does not support fails closed.
 func (e PackEngine) Steps(root string, packs []ResolvedPack) ([]Step, error) {
 	steps := make([]Step, 0)
 	for _, pack := range packs {
@@ -494,6 +502,10 @@ func (e PackEngine) Steps(root string, packs []ResolvedPack) ([]Step, error) {
 		}
 		if _, err := e.Stat(toolPath); err != nil {
 			return nil, fmt.Errorf("capability pack %q is not provisioned (%s); run `quality-gate provision`", pack.Reference, toolPath)
+		}
+		semantics, err := gateSemanticsFor(pack)
+		if err != nil {
+			return nil, err
 		}
 		env := packEnvironment(pack.Descriptor.Provisioning.Environment)
 		for _, assertion := range pack.Descriptor.Assertions {
@@ -530,21 +542,58 @@ func (e PackEngine) Steps(root string, packs []ResolvedPack) ([]Step, error) {
 				return nil, fmt.Errorf("capability pack %q gate %q command %q must be the provisioned tool %q",
 					pack.Reference, gate.Name, gate.Command, pack.Descriptor.Provisioning.Tool)
 			}
-			timeout, err := GateTimeout(gate.Timeout)
-			if err != nil {
+			if _, err := GateTimeout(gate.Timeout); err != nil {
 				return nil, fmt.Errorf("capability pack %q gate %q: %w", pack.Reference, gate.Name, err)
 			}
-			if gate.Scope == PackScopeRepository {
-				steps = append(steps, Step{
-					Name:       gate.Name,
-					Executable: toolPath,
-					Args:       gate.Args,
-					Env:        env,
-					Timeout:    timeout,
-				})
+		}
+		var repositoryUnit *packStaging
+		for _, gate := range pack.Descriptor.Gates {
+			if gate.Scope != PackScopeRepository {
 				continue
 			}
-			for _, discovered := range roots {
+			if repositoryUnit == nil {
+				repositoryUnit = &packStaging{scope: "repository"}
+			}
+			timeout, _ := GateTimeout(gate.Timeout)
+			steps = append(steps, Step{
+				Name:       gate.Name,
+				Executable: toolPath,
+				Args:       gate.Args,
+				Env:        env,
+				Timeout:    timeout,
+				staging:    repositoryUnit,
+			})
+		}
+		for _, discovered := range roots {
+			unit := &packStaging{scope: discovered}
+			if semantics.evaluationSafetyGuard {
+				steps = append(steps, Step{
+					Name:    pack.Descriptor.Capability + "-evaluation-safety (" + discovered + ")",
+					Dir:     discovered,
+					staging: unit,
+					inProcess: func(ctx context.Context, dir string) error {
+						return e.proveEvaluationSafety(dir)
+					},
+				})
+			}
+			for _, gate := range pack.Descriptor.Gates {
+				if gate.Scope != PackScopePerRoot {
+					continue
+				}
+				timeout, _ := GateTimeout(gate.Timeout)
+				if gate.Name == semantics.behavioralGate {
+					root := discovered
+					behavioralGate := gate
+					steps = append(steps, Step{
+						Name:    gate.Name + " (" + root + ")",
+						Dir:     root,
+						staging: unit,
+						inProcess: func(ctx context.Context, dir string) error {
+							return e.executeBehavioralProof(ctx, dir, root, pack, behavioralGate, toolPath)
+						},
+					})
+					continue
+				}
 				steps = append(steps, Step{
 					Name:       gate.Name + " (" + discovered + ")",
 					Dir:        discovered,
@@ -552,6 +601,7 @@ func (e PackEngine) Steps(root string, packs []ResolvedPack) ([]Step, error) {
 					Args:       gate.Args,
 					Env:        env,
 					Timeout:    timeout,
+					staging:    unit,
 				})
 			}
 		}
