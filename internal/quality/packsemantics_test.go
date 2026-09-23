@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -133,8 +134,24 @@ func TestExecuteBehavioralProofExecutes(t *testing.T) {
 	if gotDir != "." || gotExecutable != "tofu" || strings.Join(gotArgs, " ") != "test -no-color" {
 		t.Fatalf("the behavioral gate execution = %q %q %+v", gotDir, gotExecutable, gotArgs)
 	}
-	if strings.Join(gotEnv, "|") != "OPENTOFU_ENFORCE_GPG_VALIDATION=true|TF_IN_AUTOMATION=true" {
-		t.Fatalf("the pack environment must reach the behavioral gate: %+v", gotEnv)
+	cache := filepath.Join("cache", "go-quality-authority", "cache", "opentofu", "plugin-cache")
+	want := strings.Join([]string{"OPENTOFU_ENFORCE_GPG_VALIDATION=true", "TF_IN_AUTOMATION=true", "TF_PLUGIN_CACHE_DIR=" + cache}, "|")
+	if strings.Join(gotEnv, "|") != want {
+		t.Fatalf("the controlled environment must reach the behavioral gate: %+v", gotEnv)
+	}
+}
+
+// TestExecuteBehavioralProofEnvironmentError proves the environment
+// composition failure of the behavioral gate fails closed.
+func TestExecuteBehavioralProofEnvironmentError(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("main.tf", "variable \"x\" {}\n")
+	e := fakePackEngine(fs)
+	e.UserCacheDir = func() (string, error) { return "", errors.New("boom") }
+	gate := PackGate{Name: "opentofu-test", Command: "tofu", Args: []string{"test", "-no-color"}, Scope: PackScopePerRoot}
+	err := e.executeBehavioralProof(context.Background(), ".", "stacks/plain", testResolvedPackV2(), gate, "tofu")
+	if err == nil || !strings.Contains(err.Error(), "locate the governed artifact cache") {
+		t.Fatalf("expected the environment finding: %v", err)
 	}
 }
 

@@ -93,9 +93,16 @@ func (e PackEngine) executeBehavioralProof(ctx context.Context, dir, root string
 			gate.Name, root, behavioralProofDeferredMarker)
 		return nil
 	}
-	output, err := e.ExecuteOutput(ctx, dir, toolPath, gate.Args, packEnvironment(pack.Descriptor.Provisioning.Environment))
+	// The behavioral gate executes with the controlled environment: exactly the
+	// descriptor's declared environment over the engine's governed baseline,
+	// plus the governed artifact-cache binding of the cache-capable tool.
+	env, err := e.controlledEnvironment(pack.Descriptor.Provisioning.Environment, pack.Descriptor.Capability)
 	if err != nil {
-		return fmt.Errorf("the behavioral proof of %s failed: %w (%s)", root, err, strings.TrimSpace(string(output)))
+		return err
+	}
+	output, err := e.ExecuteOutput(ctx, dir, toolPath, gate.Args, env)
+	if err != nil {
+		return fmt.Errorf("the behavioral proof of %s failed: %w (%s)", root, err, failureOutputTail(output))
 	}
 	return nil
 }

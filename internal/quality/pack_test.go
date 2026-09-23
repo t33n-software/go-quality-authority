@@ -156,6 +156,25 @@ func TestDecodePackDescriptorRejections(t *testing.T) {
 	}
 }
 
+func TestDecodePackDescriptorMinEngineVersion(t *testing.T) {
+	// The optional engine-machinery binding decodes.
+	document := strings.Replace(validPackJSON(), `"summary":"OpenTofu infrastructure gates."`, `"summary":"OpenTofu infrastructure gates.","minEngineVersion":"1.2.0"`, 1)
+	descriptor, err := DecodePackDescriptor([]byte(document))
+	if err != nil {
+		t.Fatalf("DecodePackDescriptor: %v", err)
+	}
+	if descriptor.MinEngineVersion != "1.2.0" {
+		t.Fatalf("minEngineVersion = %q", descriptor.MinEngineVersion)
+	}
+	// A malformed binding is rejected with a precise field error.
+	for _, form := range []string{"1.2", "v1.2.0", "latest", "1.2.0.0"} {
+		document := strings.Replace(validPackJSON(), `"summary":"OpenTofu infrastructure gates."`, `"summary":"OpenTofu infrastructure gates.","minEngineVersion":"`+form+`"`, 1)
+		if _, err := DecodePackDescriptor([]byte(document)); err == nil || !strings.Contains(err.Error(), "minEngineVersion") {
+			t.Fatalf("expected the minEngineVersion rejection for %q: %v", form, err)
+		}
+	}
+}
+
 func TestDecodePackDescriptorForbiddenContent(t *testing.T) {
 	document := strings.Replace(validPackJSON(), `"summary":"OpenTofu infrastructure gates."`, `"summary":"-----BEGIN PRIVATE KEY-----"`, 1)
 	_, err := DecodePackDescriptor([]byte(document))

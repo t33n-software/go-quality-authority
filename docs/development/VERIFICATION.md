@@ -164,6 +164,30 @@ and covered by same-package whitebox tests:
    material) never executes offline, and the deterministic deferral record is
    the gate output — never a silent skip; an offline-capable root executes
    the behavioral gate against the clean staging.
+7. **Controlled gate environment** — every pack gate and assertion executes
+   with exactly the descriptor's declared environment over the engine's
+   governed baseline (`internal/quality/environment.go`): the minimal,
+   explicit, platform-keyed ambient set — never the operator process's
+   uncontrolled inheritance, so no gate outcome depends on the ambient
+   machine's session, credential, or proxy state. A cache-capable provisioned
+   tool binds the governed artifact-cache surface (canonically the OpenTofu
+   plugin cache with its lock-aware form), so a per-root gate sequence
+   downloads each bound artifact once, never once per root; a
+   descriptor-declared cache binding wins.
+8. **Bounded failure-output surfacing** — every failed gate step surfaces the
+   bounded captured tail of the step's combined output with the failure
+   (`internal/quality/orchestrator.go`): a capped tail with a deterministic
+   elision marker, never an unbounded dump, and never a bare exit code while
+   the step's output exists. The process-failure surfaces of the pack
+   machinery share the one canonical bounded form.
+9. **Engine-machinery currency** — a pack whose descriptor declares
+   `minEngineVersion` refuses a pinned engine that predates the declared
+   level or carries no compatibility proof entry for its major
+   (`internal/quality/compatibility.go`): the refusal is fail-closed at
+   gate-plan resolution and names the required level or the unproven
+   combination. The development identity (the home's working tree and
+   merged-line pseudo-version pins) satisfies the floor; the register is
+   engine machinery data extended per engine release.
 
 ## Whitebox testing
 

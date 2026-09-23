@@ -3,7 +3,6 @@ package quality
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -57,6 +56,7 @@ func fakePackEngine(fs *virtualFS) PackEngine {
 			return nil, errors.New("the fake pack engine downloads nothing")
 		},
 		UserCacheDir: func() (string, error) { return "cache", nil },
+		Getenv:       func(string) (string, bool) { return "", false },
 		HasToolsMod:  func(string) bool { return true },
 		GOOS:         "linux",
 		GOARCH:       "amd64",
@@ -135,22 +135,7 @@ func provisionPack(t *testing.T, o *Orchestrator, fs *virtualFS, pack ResolvedPa
 // moduleChannel returns an ExecuteOutput seam that resolves the given modules
 // to the given directories through the tooling channel.
 func moduleChannel(modules map[string]string) func(context.Context, string, string, []string, []string) ([]byte, error) {
-	return func(_ context.Context, _ string, _ string, args []string, _ []string) ([]byte, error) {
-		joined := strings.Join(args, " ")
-		if module, found := strings.CutPrefix(joined, "mod download "); found {
-			if _, ok := modules[module]; ok {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("module %s is not pinned", module)
-		}
-		if module, found := strings.CutPrefix(joined, "list -m -f {{.Dir}} "); found {
-			if dir, ok := modules[module]; ok {
-				return []byte(dir + "\n"), nil
-			}
-			return nil, fmt.Errorf("module %s is not pinned", module)
-		}
-		return nil, errors.New("unexpected process invocation")
-	}
+	return moduleChannelWithVersions(modules, nil)
 }
 
 func TestPackEngineResolveEmpty(t *testing.T) {
@@ -596,7 +581,7 @@ func TestPackEngineSteps(t *testing.T) {
 	if steps[0].Executable != toolPath {
 		t.Fatalf("the assertion must run the provisioned tool: %+v", steps[0])
 	}
-	wantEnv := []string{"OPENTOFU_ENFORCE_GPG_VALIDATION=true", "TF_IN_AUTOMATION=true"}
+	wantEnv := []string{"OPENTOFU_ENFORCE_GPG_VALIDATION=true", "TF_IN_AUTOMATION=true", "TF_PLUGIN_CACHE_DIR=" + filepath.Join("cache", "go-quality-authority", "cache", "opentofu", "plugin-cache")}
 	if strings.Join(steps[0].Env, "|") != strings.Join(wantEnv, "|") {
 		t.Fatalf("assertion env = %+v", steps[0].Env)
 	}
@@ -627,6 +612,71 @@ func TestPackEngineSteps(t *testing.T) {
 	// form: it carries no staging unit.
 	if steps[0].staging != nil {
 		t.Fatalf("the assertion carries no staging unit: %+v", steps[0])
+	}
+}
+
+// TestPackEngineStepsControlledEnvironmentComposition proves the controlled
+// gate environment of every pack step: exactly the declared environment over
+// the governed baseline plus the governed artifact-cache binding — the
+// operator process's uncontrolled inheritance never reaches a pack gate.
+func TestPackEngineStepsControlledEnvironmentComposition(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	e := fakePackEngine(fs)
+	pack := testResolvedPack()
+	provisionTool(t, &e, pack)
+	e.Getenv = func(key string) (string, bool) {
+		switch key {
+		case "PATH":
+			return "/bin", true
+		case "HOME":
+			return "/home/runner", true
+		}
+		return "", false
+	}
+	steps, err := e.Steps(".", []ResolvedPack{pack})
+	if err != nil {
+		t.Fatalf("Steps: %v", err)
+	}
+	cache := filepath.Join("cache", "go-quality-authority", "cache", "opentofu", "plugin-cache")
+	want := strings.Join([]string{"HOME=/home/runner", "OPENTOFU_ENFORCE_GPG_VALIDATION=true", "PATH=/bin", "TF_IN_AUTOMATION=true", "TF_PLUGIN_CACHE_DIR=" + cache}, "|")
+	for _, step := range steps {
+		if strings.Join(step.Env, "|") != want {
+			t.Fatalf("step %q env = %+v, want %+v", step.Name, step.Env, want)
+		}
+	}
+}
+
+// TestPackEngineStepsControlledEnvironmentError proves the cache-location
+// failure of the controlled environment fails the plan closed.
+func TestPackEngineStepsControlledEnvironmentError(t *testing.T) {
+	e := fakePackEngine(newVirtualFS())
+	pack := testResolvedPack()
+	provisionTool(t, &e, pack)
+	calls := 0
+	e.UserCacheDir = func() (string, error) {
+		calls++
+		if calls > 1 {
+			return "", errors.New("boom")
+		}
+		return "cache", nil
+	}
+	_, err := e.Steps(".", []ResolvedPack{pack})
+	if err == nil || !strings.Contains(err.Error(), "locate the governed artifact cache") {
+		t.Fatalf("expected the cache-location finding: %v", err)
+	}
+}
+
+// TestPackEngineStepsControlledEnvironmentCacheCreateError proves the cache
+// creation failure of the controlled environment fails the plan closed.
+func TestPackEngineStepsControlledEnvironmentCacheCreateError(t *testing.T) {
+	e := fakePackEngine(newVirtualFS())
+	pack := testResolvedPack()
+	provisionTool(t, &e, pack)
+	e.MkdirAll = func(string, os.FileMode) error { return errors.New("boom") }
+	_, err := e.Steps(".", []ResolvedPack{pack})
+	if err == nil || !strings.Contains(err.Error(), "create the governed artifact cache") {
+		t.Fatalf("expected the cache-create finding: %v", err)
 	}
 }
 

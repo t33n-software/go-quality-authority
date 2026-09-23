@@ -94,7 +94,10 @@ func (e PackEngine) proveVerifier(ctx context.Context, pack ResolvedPack) error 
 	if err != nil {
 		return fmt.Errorf("prove the signature verifier: %w", err)
 	}
-	env := packEnvironment(pack.Descriptor.Provisioning.Environment)
+	// The install proof runs under the controlled environment: the verifier's
+	// declared environment over the engine's governed baseline — never the
+	// operator process's uncontrolled inheritance.
+	env := packEnvironment(e.mergeEnvironment(pack.Descriptor.Provisioning.Environment))
 	for _, assertion := range pack.Descriptor.Assertions {
 		if assertion.Command != pack.Descriptor.Provisioning.Tool {
 			return fmt.Errorf("the signature verifier assertion %q command %q must be the provisioned tool %q",
@@ -241,6 +244,9 @@ func (e PackEngine) verifySignature(ctx context.Context, pack ResolvedPack, arti
 	if err := e.WriteFile(certificatePath, certificate, 0o600); err != nil {
 		return fmt.Errorf("stage the signature certificate of capability pack %q: %w", pack.Reference, err)
 	}
+	// The signature proof runs under the engine's governed baseline — never the
+	// operator process's uncontrolled inheritance.
+	env := governedBaselineEnvironment(e.Getenv, e.GOOS)
 	output, err := e.ExecuteOutput(ctx, staging, verifierTool, []string{
 		"verify-blob",
 		"--certificate", certificatePath,
@@ -248,12 +254,12 @@ func (e PackEngine) verifySignature(ctx context.Context, pack ResolvedPack, arti
 		"--certificate-identity", anchor.certificateIdentity(pack.Descriptor.Provisioning.Version),
 		"--certificate-oidc-issuer", anchor.issuer,
 		artifactPath,
-	}, nil)
+	}, env)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return fmt.Errorf("verify the signature of capability pack %q: the provisioned signature verifier is not executable: %w", pack.Reference, err)
 		}
-		return fmt.Errorf("the signature of capability pack %q is invalid: %w (%s)", pack.Reference, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("the signature of capability pack %q is invalid: %w (%s)", pack.Reference, err, failureOutputTail(output))
 	}
 	return nil
 }

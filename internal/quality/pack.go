@@ -29,12 +29,13 @@ const (
 )
 
 var (
-	packIdentityPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-	packToolPattern        = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
-	packVersionPattern     = regexp.MustCompile(`^[0-9]+\.[0-9]+(\.[0-9]+)?$`)
-	packPlatformPattern    = regexp.MustCompile(`^[a-z0-9]+-[a-z0-9]+$`)
-	packEnvironmentPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
-	packDigestPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	packIdentityPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	packToolPattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	packVersionPattern       = regexp.MustCompile(`^[0-9]+\.[0-9]+(\.[0-9]+)?$`)
+	packEngineVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	packPlatformPattern      = regexp.MustCompile(`^[a-z0-9]+-[a-z0-9]+$`)
+	packEnvironmentPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	packDigestPattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // PackDescriptor is one versioned capability pack descriptor. The descriptor
@@ -54,6 +55,14 @@ type PackDescriptor struct {
 	Discovery    *PackDiscovery   `json:"discovery"`
 	Assertions   []PackAssertion  `json:"assertions"`
 	Gates        []PackGate       `json:"gates"`
+	// MinEngineVersion is the optional engine-machinery binding: the minimum
+	// engine version whose machinery the pack's declared gates require,
+	// including the execution environment they assume. When present, a tenant
+	// whose pinned engine predates the declared level — or whose pinned engine
+	// carries no compatibility proof entry for this pack major — fails closed
+	// at gate-plan resolution: the pack's declared form never degrades into a
+	// local re-implementation on an older engine and never executes unproven.
+	MinEngineVersion string `json:"minEngineVersion,omitempty"`
 }
 
 // PackProvisioning binds the recipe by which a runner receives the pack's
@@ -178,6 +187,9 @@ func (d PackDescriptor) Validate() error {
 	}
 	if d.Version < 1 {
 		return fmt.Errorf("version must be a positive major version, got %d", d.Version)
+	}
+	if d.MinEngineVersion != "" && !packEngineVersionPattern.MatchString(d.MinEngineVersion) {
+		return fmt.Errorf("minEngineVersion %q must be a pinned three-part engine version such as 1.3.0", d.MinEngineVersion)
 	}
 	if strings.TrimSpace(d.Summary) == "" {
 		return errors.New("summary must not be empty")

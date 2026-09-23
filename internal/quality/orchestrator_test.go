@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -494,14 +495,70 @@ func TestRunProcessOutput(t *testing.T) {
 }
 
 func TestRunProcessOutputWithEnvironment(t *testing.T) {
-	// A non-empty environment extends the process environment of the step;
-	// GOFLAGS is a recognized Go variable, so `go env` proves the propagation.
-	output, err := runProcessOutput(context.Background(), ".", "go", []string{"env", "GOFLAGS"}, []string{"GOFLAGS=-mod=readonly"})
+	// A non-nil environment is the exact environment of the process: the
+	// declared value reaches the child, and the operator process's ambient
+	// inheritance never leaks. GOFLAGS is a recognized Go variable, so
+	// `go env` proves both directions.
+	t.Setenv("GOFLAGS", "-mod=mod")
+	env := append(governedBaselineEnvironment(os.LookupEnv, runtime.GOOS), "GOFLAGS=-mod=readonly")
+	output, err := runProcessOutput(context.Background(), ".", "go", []string{"env", "GOFLAGS"}, env)
 	if err != nil {
 		t.Fatalf("runProcessOutput with env: %v", err)
 	}
 	if !strings.Contains(string(output), "-mod=readonly") {
 		t.Fatalf("the step environment was not applied: %q", output)
+	}
+	// The ambient operator value never reaches the child under the exact form.
+	output, err = runProcessOutput(context.Background(), ".", "go", []string{"env", "GOFLAGS"}, governedBaselineEnvironment(os.LookupEnv, runtime.GOOS))
+	if err != nil {
+		t.Fatalf("runProcessOutput with the baseline: %v", err)
+	}
+	if strings.Contains(string(output), "-mod=mod") {
+		t.Fatalf("the ambient operator environment leaked into the process: %q", output)
+	}
+}
+
+func TestFailureOutputTail(t *testing.T) {
+	// An empty or whitespace-only output carries no evidence and binds nothing.
+	if got := failureOutputTail(nil); got != "" {
+		t.Fatalf("empty output binds nothing: %q", got)
+	}
+	if got := failureOutputTail([]byte(" \n")); got != "" {
+		t.Fatalf("whitespace-only output binds nothing: %q", got)
+	}
+	// The small form is the trimmed content.
+	if got := failureOutputTail([]byte("  boom\n")); got != "boom" {
+		t.Fatalf("the tail is trimmed: %q", got)
+	}
+	// The oversized form is the capped tail with the deterministic elision
+	// marker naming the elided bytes.
+	oversized := strings.Repeat("x", maxFailureOutputBytes+16)
+	got := failureOutputTail([]byte(oversized))
+	if !strings.Contains(got, "[16 bytes elided]") {
+		t.Fatalf("the elision marker names the elided bytes: %q", got[:64])
+	}
+	if len(got) > maxFailureOutputBytes+64 {
+		t.Fatalf("the tail stays bounded: %d", len(got))
+	}
+}
+
+func TestRunProcessFailureSurfacesTheOutputTail(t *testing.T) {
+	// A failed gate step surfaces the bounded captured output of the step —
+	// never a bare exit code while the step's output exists.
+	err := runProcess(context.Background(), ".", "go", []string{"nosuchcommand"}, nil)
+	if err == nil {
+		t.Fatal("expected the unknown-command failure")
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("the failure must carry the step's output: %q", err)
+	}
+	// A failure without captured output binds the bare error.
+	err = runProcess(context.Background(), ".", "no-such-binary-gqa24", nil, nil)
+	if err == nil {
+		t.Fatal("expected the missing-binary failure")
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Fatalf("a failure without output carries no tail: %q", err)
 	}
 }
 
