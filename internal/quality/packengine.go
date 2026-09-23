@@ -89,6 +89,9 @@ type PackEngine struct {
 	Fetch func(ctx context.Context, url string, maxBytes int64) ([]byte, error)
 	// UserCacheDir locates the pack tool cache.
 	UserCacheDir func() (string, error)
+	// Getenv reads an ambient variable for the governed baseline of the pack
+	// gate environment.
+	Getenv func(string) (string, bool)
 	// HasToolsMod reports whether the tenant carries a tools module.
 	HasToolsMod func(root string) bool
 	// MaxToolBytes is the decompression bound of a pack tool; zero binds the
@@ -134,6 +137,7 @@ func NewPackEngine(stdout, stderr io.Writer) PackEngine {
 		RemoveAll:    os.RemoveAll,
 		Fetch:        fetchURL,
 		UserCacheDir: os.UserCacheDir,
+		Getenv:       os.LookupEnv,
 		HasToolsMod: func(root string) bool {
 			_, err := os.Stat(filepath.Join(root, "tools", "go.mod"))
 			return err == nil
@@ -162,6 +166,7 @@ func (e PackEngine) Resolve(ctx context.Context, root string, references []strin
 		return nil, err
 	}
 	resolved := make([]ResolvedPack, 0, len(references))
+	var identity *engineVersionIdentity
 	for _, reference := range references {
 		capability, major := splitPackReference(reference)
 		if capability == verifierCapability {
@@ -170,6 +175,26 @@ func (e PackEngine) Resolve(ctx context.Context, root string, references []strin
 		pack, err := e.resolveOne(reference, capability, major, search)
 		if err != nil {
 			return nil, err
+		}
+		// A pack that declares its minimum engine machinery refuses a pinned
+		// engine that predates the declared level or carries no compatibility
+		// proof entry for its major — fail-closed at resolution, never a
+		// degraded or unproven execution of the pack's declared form.
+		if pack.Descriptor.MinEngineVersion != "" {
+			if identity == nil {
+				module, err := e.moduleIdentity(root)
+				if err != nil {
+					return nil, err
+				}
+				bound, err := e.engineIdentity(ctx, root, module)
+				if err != nil {
+					return nil, err
+				}
+				identity = &bound
+			}
+			if err := e.proveEngineCurrency(pack, *identity); err != nil {
+				return nil, err
+			}
 		}
 		resolved = append(resolved, pack)
 	}
@@ -270,17 +295,37 @@ func (e PackEngine) resolveModuleCapabilities(ctx context.Context, root, module 
 func (e PackEngine) resolveModuleDir(ctx context.Context, root, module string) (string, error) {
 	toolsDir := filepath.Join(root, "tools")
 	if output, err := e.ExecuteOutput(ctx, toolsDir, "go", []string{"mod", "download", module}, nil); err != nil {
-		return "", fmt.Errorf("go mod download %s: %w (%s)", module, err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("go mod download %s: %w (%s)", module, err, failureOutputTail(output))
 	}
 	output, err := e.ExecuteOutput(ctx, toolsDir, "go", []string{"list", "-m", "-f", "{{.Dir}}", module}, nil)
 	if err != nil {
-		return "", fmt.Errorf("go list -m %s: %w (%s)", module, err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("go list -m %s: %w (%s)", module, err, failureOutputTail(output))
 	}
 	resolved := strings.TrimSpace(string(output))
 	if resolved == "" {
 		return "", fmt.Errorf("go list -m %s returned no directory", module)
 	}
 	return resolved, nil
+}
+
+// resolveModuleVersion resolves a module's pinned version through the
+// tenant's integrity-pinned tooling module with the same download-first
+// discipline as the directory resolution: the module is downloaded through
+// the pinned channel before its version is queried.
+func (e PackEngine) resolveModuleVersion(ctx context.Context, root, module string) (string, error) {
+	toolsDir := filepath.Join(root, "tools")
+	if output, err := e.ExecuteOutput(ctx, toolsDir, "go", []string{"mod", "download", module}, nil); err != nil {
+		return "", fmt.Errorf("go mod download %s: %w (%s)", module, err, failureOutputTail(output))
+	}
+	output, err := e.ExecuteOutput(ctx, toolsDir, "go", []string{"list", "-m", "-f", "{{.Version}}", module}, nil)
+	if err != nil {
+		return "", fmt.Errorf("go list -m %s: %w (%s)", module, err, failureOutputTail(output))
+	}
+	version := strings.TrimSpace(string(output))
+	if version == "" {
+		return "", fmt.Errorf("go list -m %s returned no version", module)
+	}
+	return version, nil
 }
 
 // resolveOne resolves one reference against every registry tree: exactly one
@@ -507,7 +552,14 @@ func (e PackEngine) Steps(root string, packs []ResolvedPack) ([]Step, error) {
 		if err != nil {
 			return nil, err
 		}
-		env := packEnvironment(pack.Descriptor.Provisioning.Environment)
+		// Every pack gate executes with the controlled environment: exactly the
+		// descriptor's declared environment over the engine's governed baseline,
+		// plus the governed artifact-cache binding of a cache-capable tool —
+		// never the operator process's uncontrolled inheritance.
+		env, err := e.controlledEnvironment(pack.Descriptor.Provisioning.Environment, pack.Descriptor.Capability)
+		if err != nil {
+			return nil, err
+		}
 		for _, assertion := range pack.Descriptor.Assertions {
 			if assertion.Command != pack.Descriptor.Provisioning.Tool {
 				return nil, fmt.Errorf("capability pack %q assertion %q command %q must be the provisioned tool %q",

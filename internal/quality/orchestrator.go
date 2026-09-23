@@ -17,8 +17,10 @@ import (
 
 // Step is one quality-gate command in the canonical plan. A step with a
 // non-empty Expect is a fail-closed assertion: its combined output must carry
-// the expected proof text. Env carries the enforced environment of a pack
-// step; a nil Env inherits the process environment unchanged.
+// the expected proof text. Env carries the exact environment of a pack step —
+// the controlled form composed by the engine from the governed baseline and
+// the pack's declared environment; a nil Env inherits the process environment
+// unchanged (the core gates and the engine's own machinery).
 type Step struct {
 	Name       string
 	Dir        string
@@ -503,20 +505,52 @@ func goSourceFiles(root string, walk func(string, fs.WalkDirFunc) error) ([]stri
 	return files, nil
 }
 
-// runProcess executes a command, streaming its output to the process stderr.
+// maxFailureOutputBytes bounds the captured tail of a failed step's combined
+// output: the failure evidence stays exact and the lane output bounded — a
+// capped tail, never an unbounded dump.
+const maxFailureOutputBytes = 32 << 10
+
+// failureOutputTail returns the bounded tail of a failed step's combined
+// output: the trailing content, capped at maxFailureOutputBytes, with a
+// deterministic elision marker when the output exceeds the bound. An empty or
+// whitespace-only output carries no evidence and binds nothing.
+func failureOutputTail(output []byte) string {
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) <= maxFailureOutputBytes {
+		return trimmed
+	}
+	return fmt.Sprintf("… [%d bytes elided]\n%s", len(trimmed)-maxFailureOutputBytes, trimmed[len(trimmed)-maxFailureOutputBytes:])
+}
+
+// runProcess executes a command whose output carries no proof content. A
+// failure surfaces the bounded captured tail of the step's combined output
+// with the error — a gate that reports a bare exit code while the step's
+// output exists is a governance defect, because an undiagnosed failure is an
+// unprovable gate.
 func runProcess(ctx context.Context, dir, executable string, args []string, env []string) error {
-	_, err := runProcessOutput(ctx, dir, executable, args, env)
-	return err
+	output, err := runProcessOutput(ctx, dir, executable, args, env)
+	if err != nil {
+		if tail := failureOutputTail(output); tail != "" {
+			return fmt.Errorf("%w\n%s", err, tail)
+		}
+		return err
+	}
+	return nil
 }
 
 // runProcessOutput executes a command and returns its combined output. A
-// non-empty env extends the process environment (the pack's enforced
-// environment); a nil env inherits it unchanged.
+// non-nil env is the exact environment of the process — the controlled form
+// of the pack executions, composed by the engine from the governed baseline
+// and the pack's declared environment; a nil env inherits the process
+// environment unchanged (the core gates and the engine's own machinery).
 func runProcessOutput(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, executable, args...)
 	command.Dir = dir
-	if len(env) > 0 {
-		command.Env = append(os.Environ(), env...)
+	if env != nil {
+		command.Env = env
 	}
 	return command.CombinedOutput()
 }

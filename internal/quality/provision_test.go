@@ -148,6 +148,7 @@ func provisionEngine(state *provisionState, goos string) PackEngine {
 			}
 			return "cache", nil
 		},
+		Getenv:      func(string) (string, bool) { return "", false },
 		HasToolsMod: func(string) bool { return true },
 		GOOS:        goos,
 		GOARCH:      "amd64",
@@ -458,6 +459,35 @@ func TestPackEngineProvisionVerifierUnknown(t *testing.T) {
 	toolPath := filepath.Join("cache", "go-quality-authority", "packs", "opentofu", "v1", "linux-amd64", "tofu")
 	if _, found := state.written[toolPath]; found {
 		t.Fatal("the signature-bound pack must not be provisioned without the verifier")
+	}
+}
+
+func TestPackEngineProvisionVerifierControlledEnvironment(t *testing.T) {
+	// The verifier install proof runs under the controlled environment: the
+	// verifier's declared environment over the engine's governed baseline —
+	// never the operator process's uncontrolled inheritance.
+	state := &provisionState{fetch: map[string][]byte{}, fetchErr: map[string]error{}, written: map[string][]byte{}}
+	bindVerifier(t, state)
+	e := provisionEngine(state, "linux")
+	e.Getenv = func(key string) (string, bool) {
+		if key == "PATH" {
+			return "/bin", true
+		}
+		return "", false
+	}
+	base := e.ExecuteOutput
+	var gotEnv []string
+	e.ExecuteOutput = func(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		if executable != "go" {
+			gotEnv = env
+		}
+		return base(ctx, dir, executable, args, env)
+	}
+	if _, err := e.ProvisionVerifier(context.Background(), "."); err != nil {
+		t.Fatalf("ProvisionVerifier: %v", err)
+	}
+	if strings.Join(gotEnv, "|") != "PATH=/bin" {
+		t.Fatalf("the install proof environment = %+v, want exactly the governed baseline", gotEnv)
 	}
 }
 

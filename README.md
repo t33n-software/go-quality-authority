@@ -88,6 +88,21 @@ surface), and the behavioral proof of an encryption-carrying root is deferred
 to the governed execution window with a deterministic gate record — never
 silently skipped.
 
+Every pack execution runs with a controlled environment: exactly the
+descriptor's declared environment over the engine's governed baseline — never
+the operator process's uncontrolled inheritance, so no gate outcome depends on
+the ambient machine's session, credential, or proxy state. A cache-capable
+tool binds the governed artifact cache (canonically the OpenTofu plugin cache
+with its lock-aware form), so a per-root gate sequence downloads each bound
+artifact once, never once per root. Every failed gate step surfaces the
+bounded captured tail of the step's output with the failure — a capped tail,
+never an unbounded dump, never a bare exit code while the step's output
+exists. A pack whose descriptor declares `minEngineVersion` fails closed at
+resolution when the pinned engine predates the declared machinery (naming the
+required level) or carries no compatibility proof entry for the pack major
+(naming the unproven combination) — never a degraded or unproven execution of
+the pack's declared form.
+
 The pack model is owned by the capability-pack contract; this home owns the
 orchestrator machinery.
 

@@ -54,7 +54,7 @@ func (o Orchestrator) materializeStaging(ctx context.Context, root string, unit 
 func (o Orchestrator) copyTrackedFiles(ctx context.Context, root, staging string) error {
 	output, err := o.ExecuteOutput(ctx, root, "git", []string{"ls-files", "-z"}, nil)
 	if err != nil {
-		return fmt.Errorf("enumerate the tracked files: %w (%s)", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("enumerate the tracked files: %w (%s)", err, failureOutputTail(output))
 	}
 	for _, name := range strings.Split(string(output), "\x00") {
 		if name == "" {
