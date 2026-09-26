@@ -1,0 +1,17 @@
+name: Canonical Conformance
+
+on:
+  push:
+    branches: [main, develop, "release/**", "support/**"]
+  pull_request:
+    branches: [main, develop, "release/**", "support/**"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  conformance:
+    name: Canonical conformance
+    permissions:
+      contents: read
+    uses: t33n-software/repository-governance/.github/workflows/reusable-canonical-conformance.yml@163bc21ca2120058a04555ef0dcc4eebb7fa39a2
