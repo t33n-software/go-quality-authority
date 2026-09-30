@@ -43,6 +43,12 @@
       "module": "github.com/t33n-software/license-hub",
       "package": "github.com/t33n-software/license-hub/cmd/license",
       "purpose": "license render and verify CLI for the canonical license instances"
+    },
+    {
+      "name": "provision-canonical",
+      "module": "github.com/t33n-software/repository-governance",
+      "package": "github.com/t33n-software/repository-governance/cmd/provision-canonical",
+      "purpose": "canonical file family provisioning CLI for the governed tenant surfaces"
     }
   ]
 }
