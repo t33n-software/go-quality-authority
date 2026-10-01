@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.6
 
 require (
-	github.com/hashicorp/hcl/v2 v2.24.0
+	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/zclconf/go-cty v1.19.0
 	go.yaml.in/yaml/v3 v3.0.4
 )
