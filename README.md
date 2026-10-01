@@ -3,17 +3,20 @@
 `go-quality-authority` is the canonical Go territory home for the shared
 quality tooling of the fleet. It owns the producer side of the quality
 contract: the `quality-gate` orchestrator, the `check-coverage` 100-percent
-statement-coverage gate, the canonical `git-governance.quality.json`
-configuration schema, and the canonical Go tool catalog.
+statement-coverage gate, and the canonical Go tool catalog. The
+`git-governance.quality.json` configuration seam is owned by the
+supply-chain-governance shared kernel from schema version 4; this home
+references it by identity (`quality-gate-config/v4`) and never carries a
+schema copy.
 
 ## Artifacts
 
 | Artifact | Path | Role |
 |---|---|---|
-| Quality-gate orchestrator | `cmd/quality-gate/` | Reads the schema-validated config seam, asserts the controlled toolchain, executes the canonical gate set, and discovers command binaries and fuzz targets by convention |
+| Quality-gate orchestrator | `cmd/quality-gate/` | Reads the schema-validated config seam, asserts the controlled toolchain, executes the canonical gate set (including the fail-closed YAML wellformedness proof over every convention-discovered `.yml`/`.yaml` document), resolves and provisions the declared capability packs, and discovers command binaries, fuzz targets, and YAML documents by convention |
 | Coverage gate | `cmd/check-coverage/` | Enforces test-source presence and exact 100-percent statement coverage for every executable Go package |
-| Config schema | `schemas/quality-gate-config/v1/schema.json` | The versioned, strictly decoded, named-owner configuration seam (schema version 3) |
-| Tool catalog | `catalog/tools.json` | The canonical set of admitted Go tools consumed as `tool` directives |
+| Config seam | `quality-gate-config/v4` in `supply-chain-governance` | The centralized, versioned, strictly decoded configuration seam definition, referenced by identity |
+| Tool catalog | `catalog/tools.json` | The canonical set of admitted Go tools consumed as `tool` directives; its schema document `catalog/tools.schema.json` carries the exact canonical `$id` and the strict format description |
 | Conformance vectors | `conformance/{positive,negative}/` | The proof set for the configuration seam: every acceptance and every rejection |
 
 ## Consumption
@@ -37,16 +40,77 @@ go get -tool github.com/t33n-software/go-quality-authority/cmd/quality-gate@v1.0
 ## The configuration seam
 
 `git-governance.quality.json` is the typed seam between the fleet and the
-tenant. The schema is versioned (`v<major>`), owned by this home, strictly
-decoded, and proven by the conformance vectors. The canonical gate set is
-fleet-identical; the `project` block is data and shrinks to named exceptions,
-because the orchestrator discovers `./cmd/*` binaries and convention-placed
-fuzz targets without configuration.
+tenant. The schema is versioned (`v<major>`), owned by the
+supply-chain-governance shared kernel from version 4, strictly decoded by
+this home, and proven by the conformance vectors. The toolchain identity is
+language-keyed (`language` plus `version`), and the optional `extends` list
+declares capability pack references in the `<capability>@<major>` form. The
+canonical gate set is fleet-identical; the `project` block is data and shrinks
+to named exceptions, because the orchestrator discovers `./cmd/*` binaries and
+convention-placed fuzz targets without configuration.
+
+## Capability packs
+
+A capability pack is a versioned, schema-bound unit of shared gate behavior
+that a tenant declares through the `extends` list. The pack registry lives in
+the owning home: language-neutral packs (such as `opentofu`) in the
+`supply-chain-governance` shared kernel, language-bound packs in this
+territory's `capabilities/` area. The orchestrator resolves every declared
+reference against the union of both registries at the tenant's pinned tool
+stand — a declared but unknown reference is a fail-closed finding, never a
+silent skip — and composes the gate order deterministically: the core gates,
+then the pack gates, then the project gates. A pack's assertions run before
+any of its gates.
+
+The `provision` mode executes each declared pack's recipe: it downloads the
+bound artifact for the runner platform, verifies the bound `sha256` digest
+fail-closed, verifies the cosign signature where the descriptor binds one
+(against the publisher's OIDC-bound release-workflow identity), and installs
+the tool into the pack tool cache. The reusable CI payload runs it before the
+gate, so the payload stays a constant-size shell that never grows per
+capability:
+
+```bash
+go tool -modfile tools/go.mod quality-gate provision
+go tool -modfile tools/go.mod quality-gate
+```
+
+Every pack gate executes against a clean staging of the tracked files of its
+execution unit — never the residue-carrying working directory — provided
+uniformly by the orchestrator, identically on a fresh CI checkout and on a
+local working directory. A pack major whose engine-level gate semantics the
+pinned orchestrator does not support fails closed; a tenant flips its pinned
+major through a reviewed change once the orchestrator supports it. For the
+OpenTofu pack's value-evaluation major, the orchestrator proves every custom
+condition of every root evaluation-safe against the declared variable types
+(the static guard, over the real HCL parser and a closed-world function
+surface), and the behavioral proof of an encryption-carrying root is deferred
+to the governed execution window with a deterministic gate record — never
+silently skipped.
+
+Every pack execution runs with a controlled environment: exactly the
+descriptor's declared environment over the engine's governed baseline — never
+the operator process's uncontrolled inheritance, so no gate outcome depends on
+the ambient machine's session, credential, or proxy state. A cache-capable
+tool binds the governed artifact cache (canonically the OpenTofu plugin cache
+with its lock-aware form), so a per-root gate sequence downloads each bound
+artifact once, never once per root. Every failed gate step surfaces the
+bounded captured tail of the step's output with the failure — a capped tail,
+never an unbounded dump, never a bare exit code while the step's output
+exists. A pack whose descriptor declares `minEngineVersion` fails closed at
+resolution when the pinned engine predates the declared machinery (naming the
+required level) or carries no compatibility proof entry for the pack major
+(naming the unproven combination) — never a degraded or unproven execution of
+the pack's declared form.
+
+The pack model is owned by the capability-pack contract; this home owns the
+orchestrator machinery.
 
 ```json
 {
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
+  "extends": [],
   "defaults": { "includeFamilies": ["feature", "fix", "docs", "refactor", "chore", "test", "perf", "hotfix"] },
   "gates": [
     {

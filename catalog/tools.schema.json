@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/t33n-software/go-quality-authority/main/catalog/tools.schema.json",
+  "title": "Go Tool Catalog",
+  "description": "The canonical Go tool catalog (catalog/tools.json) of the go-quality-authority home: the admitted Go tools consumed as tool directives of the tenant tooling modules. The catalog admission is the single admission surface for every Go tool of a tenant. The schema is owned and shipped by the go-quality-authority home, strictly decoded, and proven by the contract-test set; the catalog references it by identity (asserted, never dereferenced).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "tools"],
+  "properties": {
+    "$schema": {
+      "const": "https://raw.githubusercontent.com/t33n-software/go-quality-authority/main/catalog/tools.schema.json",
+      "description": "The canonical identity reference of this schema — asserted by identity, never dereferenced."
+    },
+    "schemaVersion": {
+      "const": 1,
+      "description": "The canonical tool-catalog schema version."
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The admitted Go tools; the admission key is the tool name.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "module", "package", "purpose"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+            "description": "The kebab-case tool name — the admission key."
+          },
+          "module": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The Go module path that carries the tool."
+          },
+          "package": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The Go package path of the tool's main package — the tool-directive target."
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The precise purpose of the tool in the gate set."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,226 @@
+================================================================================
+go-quality-authority No-Republish License
+Version 1.0
+
+SPDX-License-Identifier: LicenseRef-go-quality-authority-NoRepublish-1.0
+Copyright (c) 2026 CyberT33N
+================================================================================
+
+0. DEFINITIONS
+
+0.1 "Software" means the work of authorship known as "go-quality-authority",
+    including its source code, object code, build scripts, tests,
+    documentation, and release artifacts, as made available by the
+    Licensor.
+
+0.2 "Licensor" means CyberT33N, the sole copyright holder of
+    the Software and the only party entitled to grant rights under this
+    License.
+
+0.3 "You" (or "Licensee") means any natural person or legal entity
+    exercising rights granted by this License.
+
+0.4 "Canonical Source" means the official distribution point of the
+    Software designated by the Licensor at:
+
+        https://github.com/t33n-software/go-quality-authority
+
+    including release channels and mirrors explicitly operated by or on
+    behalf of the Licensor.
+
+0.5 "Use" means downloading, installing, loading, executing, or
+    interacting with the Software, for any lawful purpose, whether
+    commercial or non-commercial.
+
+0.6 "Derivative Work" means any work that is based on, derived from, or
+    incorporates the Software or any part of it.
+
+0.7 "Substantially Similar Work" means the Software or a Derivative Work
+    whose functional core remains the functional core of the Software.
+    A work is presumed Substantially Similar if any of the following
+    applies:
+    (a) a majority of its source files are identical or substantially
+        identical to source files of the Software;
+    (b) its externally visible feature set and behavior substantially
+        reproduce those of the Software;
+    (c) modifications are limited to renaming, rebranding, reformatting,
+        or changes to a minority of files.
+    Renaming or repackaging never removes Substantial Similarity.
+
+0.8 "Patch" means a machine-readable difference description (for example
+    a unified diff) that (a) refers to the Software at the Canonical
+    Source, (b) does not contain the complete Software or a Substantially
+    Similar Work, and (c) is intended to be applied to an unmodified copy
+    of the Software obtained from the Canonical Source.
+
+0.9 "Publish" or "Redistribute" means making a work available to any
+    third party, in source or binary form, by any means — including but
+    not limited to public or private repository hosting, package
+    registries, download servers, mirrors, or physical media — whether
+    or not for a fee, and whether under the name "go-quality-authority" or
+    any other name. Providing the Software solely to employees,
+    contractors, or agents of Your organization for internal Use is not
+    Publishing.
+
+1. GRANT OF RIGHTS
+
+Subject to the conditions and restrictions of this License, the Licensor
+grants You a worldwide, royalty-free, non-exclusive, non-transferable,
+non-sublicensable license to:
+
+1.1 Use the Software, commercially and non-commercially, without
+    restriction as to purpose, field of endeavor, or duration;
+1.2 obtain and copy the Software from the Canonical Source, including
+    cloning its source repository, and create copies as reasonably
+    necessary for Use;
+1.3 build the Software from its source code and Use the resulting
+    artifacts;
+1.4 modify the Software and create Derivative Works, and Use such
+    Derivative Works, including within Your organization;
+1.5 Use the official release artifacts published at the Canonical
+    Source.
+
+2. RESTRICTION — NO REPUBLICATION
+
+2.1 You must not Publish or Redistribute the Software, in whole or in
+    substantial part, in unmodified form.
+2.2 You must not Publish or Redistribute any Substantially Similar Work,
+    whether commercially or non-commercially, whether or not for a fee,
+    and whether under the name "go-quality-authority", a modified name, or
+    any other name.
+2.3 You must not Publish or Redistribute the Software or a Substantially
+    Similar Work as Your own project, product, fork, or work.
+2.4 The prohibitions in this Section 2 apply regardless of how many
+    files have been modified; renaming, rebranding, or partial
+    modification does not lift them while the work remains a
+    Substantially Similar Work.
+
+3. PERMITTED DISTRIBUTION
+
+3.1 You may distribute Patches, provided that each Patch complies with
+    Definition 0.8 and does not misrepresent the Licensor as its author.
+3.2 You may distribute build scripts, package definitions, or tooling
+    that obtain the Software exclusively from the Canonical Source,
+    provided they do not bundle the Software or a Substantially Similar
+    Work.
+3.3 Any other distribution requires the prior written permission of the
+    Licensor, which may be requested via https://github.com/t33n-software and may
+    be granted or withheld at the Licensor's sole discretion.
+
+4. CONDITIONS
+
+4.1 Every permitted copy, Patch, or build instruction must retain all
+    copyright notices, this License text or a reference to it, and all
+    attribution notices, unmodified.
+4.2 You must not remove, alter, or obscure any license or copyright
+    notice in the Software.
+4.3 Patches of modifications must identify the modifications they
+    contain and must not present them as originating from the Licensor.
+
+5. PATENT GRANT AND RETALIATION
+
+5.1 Subject to the conditions and restrictions of this License, the
+    Licensor grants You a worldwide, royalty-free, non-exclusive patent
+    license under the Licensor's patent claims necessarily infringed by
+    the Software, to make Use of the Software as permitted by Section 1.
+5.2 No patent rights are granted for any activity prohibited by
+    Section 2.
+5.3 If You institute patent litigation against the Licensor alleging
+    that the Software infringes a patent, all patent licenses granted to
+    You under this License terminate as of the date such litigation is
+    filed.
+
+6. TRADEMARKS
+
+6.1 This License does not grant any right to use the name
+    "go-quality-authority", the Licensor's name, or any related trademarks
+    or logos, except as required for truthful attribution.
+6.2 Renaming the Software or a Derivative Work does not create any
+    distribution right; Section 2 continues to apply in full.
+
+7. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+Nothing in this Section limits or excludes any warranty or liability
+that cannot be limited or excluded under mandatory applicable law,
+including mandatory statutory liability under the law of
+the Federal Republic of Germany.
+
+8. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL
+OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, DATA, OR GOODWILL, ARISING
+OUT OF OR RELATED TO THIS LICENSE OR THE SOFTWARE. Nothing in this
+Section limits liability for intent (Vorsatz) or gross negligence
+(grobe Fahrlässigkeit), or any other liability that cannot be limited
+under mandatory applicable law.
+
+9. TERMINATION
+
+9.1 This License terminates automatically and immediately if You violate
+    Section 2 (No Republication).
+9.2 For any other breach, this License terminates automatically 30 days
+    after You receive notice of the breach, unless You cure the breach
+    within that period.
+9.3 Upon termination, all rights granted to You under this License end;
+    Sections 7, 8, 11, and 12 survive.
+9.4 Termination does not entitle You to any refund or compensation.
+
+10. COMPLIANCE
+
+10.1 Upon the Licensor's written request, You must certify in writing
+     that Your use and any distribution comply with this License.
+10.2 The Licensor may require You to cease and remove any non-compliant
+     distribution.
+
+11. GOVERNING LAW, VENUE, LANGUAGE
+
+11.1 This License is governed by the law of the Federal Republic of Germany, excluding
+     its conflict-of-laws rules and excluding the United Nations
+     Convention on Contracts for the International Sale of Goods.
+11.2 The exclusive place of jurisdiction is Germany, to the extent
+     permissible under mandatory applicable law.
+11.3 The controlling language of this License is English. Translations
+     are provided for convenience only.
+
+12. GENERAL PROVISIONS
+
+12.1 Severability: If any provision of this License is held invalid or
+     unenforceable, the remaining provisions remain in full force; the
+     invalid provision is replaced by a valid provision that comes
+     closest to its intent.
+12.2 Waiver: A failure to enforce any provision is not a waiver of that
+     provision.
+12.3 Assignment: You may not assign or transfer this License without the
+     Licensor's prior written consent; the Licensor may assign it in
+     connection with a transfer of the copyright in the Software.
+12.4 Entire Agreement: This License is the entire agreement between the
+     parties concerning the Software and supersedes all prior
+     understandings.
+12.5 Amendments: Amendments to this License for a given release of the
+     Software require the written form, except as provided in
+     Section 13.
+
+13. VERSIONING
+
+13.1 This is version 1.0 of the go-quality-authority No-Republish License.
+13.2 The Licensor may publish new versions of this License at the
+     Canonical Source. Each release of the Software is licensed under
+     the License version accompanying that release ("-only" semantics);
+     no automatic upgrade to future versions applies.
+13.3 The Licensor may, at its sole discretion, relicense future releases
+     of the Software under different terms.
+
+14. MACHINE-READABILITY
+
+14.1 The SPDX license identifier of this License is:
+     LicenseRef-go-quality-authority-NoRepublish-1.0
+14.2 The canonical text of this License is stored at:
+     LICENSES/LicenseRef-go-quality-authority-NoRepublish-1.0.txt
+     in the Canonical Source, following the REUSE 3.2 specification.
+14.3 Each source file of the Software carries the header:
+     SPDX-License-Identifier: LicenseRef-go-quality-authority-NoRepublish-1.0
+     SPDX-FileCopyrightText: 2026 CyberT33N

@@ -2,12 +2,16 @@ package quality
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -17,12 +21,13 @@ type recordedCall struct {
 	Dir        string
 	Executable string
 	Args       []string
+	Env        []string
 }
 
 func testConfig() Config {
 	return Config{
 		SchemaVersion: SchemaVersion,
-		Toolchain:     Toolchain{GoVersion: "1.26.6"},
+		Toolchain:     Toolchain{Language: "go", Version: "1.26.6"},
 		Gates:         []Gate{{Name: "full-local-build", Command: "go"}},
 	}
 }
@@ -30,6 +35,7 @@ func testConfig() Config {
 func fakeOrchestrator(fs *virtualFS) (Orchestrator, *[]recordedCall) {
 	calls := &[]recordedCall{}
 	var stdout, stderr strings.Builder
+	stagingCounter := 0
 	o := Orchestrator{
 		Config:   testConfig(),
 		Discover: discovererFor(fs),
@@ -38,30 +44,57 @@ func fakeOrchestrator(fs *virtualFS) (Orchestrator, *[]recordedCall) {
 			Stdout: &stdout,
 			Stderr: &stderr,
 		},
-		Execute: func(ctx context.Context, dir, executable string, args ...string) error {
-			*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args})
+		Execute: func(ctx context.Context, dir, executable string, args []string, env []string) error {
+			*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
 			return nil
+		},
+		ExecuteOutput: func(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+			*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+			return []byte(""), nil
 		},
 		GoVersion:   func(context.Context, string) (string, error) { return "go1.26.6", nil },
 		Stdout:      &stdout,
 		Stderr:      &stderr,
 		HasToolsMod: func(string) bool { return true },
 		GoFiles:     func(string) ([]string, error) { return []string{"main.go"}, nil },
+		YAMLFiles:   func(string) ([]string, error) { return nil, nil },
+		ReadFile:    fs.readFile,
+		TempDir: func(pattern string) (string, error) {
+			stagingCounter++
+			return fmt.Sprintf("staging-%d", stagingCounter), nil
+		},
+		MkdirAll: func(string, os.FileMode) error { return nil },
+		WriteFile: func(path string, data []byte, _ os.FileMode) error {
+			fs.addFile(path, string(data))
+			return nil
+		},
+		RemoveAll: func(string) error { return nil },
+		Packs:     fakePackEngine(fs),
 	}
 	return o, calls
 }
 
 func TestOrchestratorPlanEmptyRoot(t *testing.T) {
 	o, _ := fakeOrchestrator(newVirtualFS())
-	if _, err := o.Plan(" "); err == nil {
+	if _, err := o.Plan(context.Background(), " "); err == nil {
 		t.Fatal("expected an error for an empty root")
+	}
+}
+
+func TestOrchestratorPlanNilContext(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("cmd/tool/main.go", "package main\n")
+	o, _ := fakeOrchestrator(fs)
+	// A nil context is normalized to the background context.
+	if _, err := o.Plan(testNilContext(), "."); err != nil {
+		t.Fatalf("Plan with nil context: %v", err)
 	}
 }
 
 func TestOrchestratorPlanBinaryDiscoveryError(t *testing.T) {
 	o, _ := fakeOrchestrator(newVirtualFS())
 	o.Discover = Discoverer{ReadDir: func(string) ([]os.DirEntry, error) { return nil, errors.New("boom") }}
-	if _, err := o.Plan("."); err == nil {
+	if _, err := o.Plan(context.Background(), "."); err == nil {
 		t.Fatal("expected the binary discovery error")
 	}
 }
@@ -75,7 +108,7 @@ func TestOrchestratorPlanFuzzDiscoveryError(t *testing.T) {
 		ReadFile: fs.readFile,
 		Walk:     func(string, iofs.WalkDirFunc) error { return errors.New("boom") },
 	}
-	if _, err := o.Plan("."); err == nil {
+	if _, err := o.Plan(context.Background(), "."); err == nil {
 		t.Fatal("expected the fuzz discovery error")
 	}
 }
@@ -83,7 +116,7 @@ func TestOrchestratorPlanFuzzDiscoveryError(t *testing.T) {
 func TestOrchestratorPlanGoFilesError(t *testing.T) {
 	o, _ := fakeOrchestrator(newVirtualFS())
 	o.GoFiles = func(string) ([]string, error) { return nil, errors.New("boom") }
-	if _, err := o.Plan("."); err == nil {
+	if _, err := o.Plan(context.Background(), "."); err == nil {
 		t.Fatal("expected the Go-files error")
 	}
 }
@@ -93,7 +126,7 @@ func TestOrchestratorPlanContent(t *testing.T) {
 	fs.addFile("cmd/quality-gate/main.go", "package main\n")
 	fs.addFile("internal/quality/config_test.go", "package quality\n\nfunc FuzzParse(f *testing.F) {}\n")
 	o, _ := fakeOrchestrator(fs)
-	steps, err := o.Plan(".")
+	steps, err := o.Plan(context.Background(), ".")
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -106,6 +139,7 @@ func TestOrchestratorPlanContent(t *testing.T) {
 		"verify controlled toolchain",
 		"download module dependencies",
 		"check Go formatting",
+		"verify YAML wellformedness",
 		"run lint",
 		"run unit, contract, and integration tests",
 		"run race detector",
@@ -124,16 +158,16 @@ func TestOrchestratorPlanContent(t *testing.T) {
 func TestOrchestratorPlanWithoutToolsMod(t *testing.T) {
 	o, _ := fakeOrchestrator(newVirtualFS())
 	o.HasToolsMod = func(string) bool { return false }
-	steps, err := o.Plan(".")
+	steps, err := o.Plan(context.Background(), ".")
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
 	toolsSteps := map[string]bool{
-		"download tool dependencies":  true,
-		"verify tool dependencies":    true,
-		"verify tool metadata":        true,
-		"run lint":                    true,
-		"run vulnerability analysis":  true,
+		"download tool dependencies":      true,
+		"verify tool dependencies":        true,
+		"verify tool metadata":            true,
+		"run lint":                        true,
+		"run vulnerability analysis":      true,
 		"validate Lefthook configuration": true,
 	}
 	for _, step := range steps {
@@ -167,7 +201,7 @@ func TestOrchestratorRunStepError(t *testing.T) {
 	fs := newVirtualFS()
 	fs.addFile("cmd/tool/main.go", "package main\n")
 	o, _ := fakeOrchestrator(fs)
-	o.Execute = func(context.Context, string, string, ...string) error { return errors.New("boom") }
+	o.Execute = func(context.Context, string, string, []string, []string) error { return errors.New("boom") }
 	if err := o.Run(context.Background(), "."); err == nil {
 		t.Fatal("expected the step error")
 	}
@@ -195,18 +229,130 @@ func TestOrchestratorVerifyToolchain(t *testing.T) {
 	if err := o.verifyToolchain(context.Background(), "."); err != nil {
 		t.Fatalf("verifyToolchain: %v", err)
 	}
-	o.Config.Toolchain.GoVersion = "go1.26.6"
-	if err := o.verifyToolchain(context.Background(), "."); err != nil {
-		t.Fatalf("verifyToolchain with go prefix: %v", err)
+	o.Config.Toolchain.Language = "rust"
+	if err := o.verifyToolchain(context.Background(), "."); err == nil {
+		t.Fatal("expected the non-Go toolchain rejection")
 	}
-	o.Config.Toolchain.GoVersion = "1.25.0"
+	o.Config.Toolchain.Language = "go"
+	o.Config.Toolchain.Version = "1.25.0"
 	if err := o.verifyToolchain(context.Background(), "."); err == nil {
 		t.Fatal("expected a toolchain mismatch error")
 	}
 	o.GoVersion = func(context.Context, string) (string, error) { return "", errors.New("boom") }
-	o.Config.Toolchain.GoVersion = "1.26.6"
+	o.Config.Toolchain.Version = "1.26.6"
 	if err := o.verifyToolchain(context.Background(), "."); err == nil {
 		t.Fatal("expected the toolchain read error")
+	}
+}
+
+func TestOrchestratorVerifyFormatting(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("cmd/tool/main.go", "package main\n")
+	o, _ := fakeOrchestrator(fs)
+	step := Step{Name: "check Go formatting", Executable: "gofmt", Args: []string{"-l", "main.go"}}
+
+	// The regression guard: drift reported on the output stream with a zero
+	// exit code must fail the gate — the defect was the exit-code-only
+	// evaluation.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return []byte("main.go\n"), nil
+	}
+	if err := o.runStep(context.Background(), ".", step); err == nil {
+		t.Fatal("expected the format drift finding")
+	} else if !strings.Contains(err.Error(), "main.go") {
+		t.Fatalf("the finding must name the drifted file: %q", err)
+	}
+
+	// A clean tree passes, and the proof runs the step's own gofmt invocation
+	// through the output-capture seam.
+	var got []string
+	o.ExecuteOutput = func(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		got = append([]string{executable}, args...)
+		return []byte(""), nil
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep format proof: %v", err)
+	}
+	if strings.Join(got, " ") != "gofmt -l main.go" {
+		t.Fatalf("the proof must run the step's own invocation, got %q", got)
+	}
+
+	// Whitespace-only output is a pass.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return []byte(" \n"), nil
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep format proof with whitespace output: %v", err)
+	}
+
+	// The process error propagates wrapped.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return nil, errors.New("boom")
+	}
+	if err := o.runStep(context.Background(), ".", step); err == nil {
+		t.Fatal("expected the format execution error")
+	} else if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestOrchestratorPlanResolvesDeclaredPacks(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("cmd/tool/main.go", "package main\n")
+	o, _ := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	steps, err := o.Plan(context.Background(), ".")
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	names := make([]string, 0, len(steps))
+	for _, step := range steps {
+		names = append(names, step.Name)
+	}
+	joined := strings.Join(names, "|")
+	for _, want := range []string{"opentofu-version", "opentofu-fmt-check"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("plan is missing the pack step %q; got %q", want, joined)
+		}
+	}
+	// The pack gates compose after the core analysis and before the project
+	// binaries.
+	analysis := strings.Index(joined, "run static analysis")
+	packGate := strings.Index(joined, "opentofu-fmt-check")
+	project := strings.Index(joined, "build tool")
+	if analysis < 0 || packGate < 0 || project < 0 || !(analysis < packGate && packGate < project) {
+		t.Fatalf("the composition order is core -> pack -> project; got %q", joined)
+	}
+}
+
+func TestOrchestratorPlanUnknownPackFailsClosed(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("cmd/tool/main.go", "package main\n")
+	o, _ := fakeOrchestrator(fs)
+	o.Config.Extends = []string{"opentofu@1"}
+	// The fake engine resolves nothing: the reference is unknown.
+	o.Packs.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return nil, errors.New("module not pinned")
+	}
+	if _, err := o.Plan(context.Background(), "."); err == nil {
+		t.Fatal("expected the unknown-pack fail-closed error")
+	} else if !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("Plan error = %q, want the unknown-reference finding", err)
+	}
+}
+
+func TestOrchestratorPlanPackNotProvisioned(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("cmd/tool/main.go", "package main\n")
+	o, _ := fakeOrchestrator(fs)
+	o.Config.Extends = []string{"opentofu@1"}
+	bindWorkingTreeRegistry(fs)
+	// The pack resolves, but the tool is absent from the pack tool cache.
+	if _, err := o.Plan(context.Background(), "."); err == nil {
+		t.Fatal("expected the not-provisioned fail-closed error")
+	} else if !strings.Contains(err.Error(), "not provisioned") {
+		t.Fatalf("Plan error = %q, want the not-provisioned finding", err)
 	}
 }
 
@@ -327,7 +473,7 @@ func TestGoSourceFilesError(t *testing.T) {
 
 func TestNewOrchestratorDefaults(t *testing.T) {
 	o := NewOrchestrator(testConfig(), nil, nil)
-	if o.Execute == nil || o.GoVersion == nil || o.GoFiles == nil || o.HasToolsMod == nil {
+	if o.Execute == nil || o.GoVersion == nil || o.GoFiles == nil || o.YAMLFiles == nil || o.ReadFile == nil || o.HasToolsMod == nil {
 		t.Fatal("expected the production seams to be bound")
 	}
 	if o.Stdout == nil || o.Stderr == nil {
@@ -336,15 +482,83 @@ func TestNewOrchestratorDefaults(t *testing.T) {
 }
 
 func TestRunProcessOutput(t *testing.T) {
-	output, err := runProcessOutput(context.Background(), ".", "go", "version")
+	output, err := runProcessOutput(context.Background(), ".", "go", []string{"version"}, nil)
 	if err != nil {
 		t.Fatalf("runProcessOutput: %v", err)
 	}
 	if !strings.Contains(string(output), "go version") {
 		t.Fatalf("output = %q", output)
 	}
-	if err := runProcess(context.Background(), ".", "go", "version"); err != nil {
+	if err := runProcess(context.Background(), ".", "go", []string{"version"}, nil); err != nil {
 		t.Fatalf("runProcess: %v", err)
+	}
+}
+
+func TestRunProcessOutputWithEnvironment(t *testing.T) {
+	// A non-nil environment is the exact environment of the process: the
+	// declared value reaches the child, and the operator process's ambient
+	// inheritance never leaks. GOFLAGS is a recognized Go variable, so
+	// `go env` proves both directions.
+	t.Setenv("GOFLAGS", "-mod=mod")
+	env := append(governedBaselineEnvironment(os.LookupEnv, runtime.GOOS), "GOFLAGS=-mod=readonly")
+	output, err := runProcessOutput(context.Background(), ".", "go", []string{"env", "GOFLAGS"}, env)
+	if err != nil {
+		t.Fatalf("runProcessOutput with env: %v", err)
+	}
+	if !strings.Contains(string(output), "-mod=readonly") {
+		t.Fatalf("the step environment was not applied: %q", output)
+	}
+	// The ambient operator value never reaches the child under the exact form.
+	output, err = runProcessOutput(context.Background(), ".", "go", []string{"env", "GOFLAGS"}, governedBaselineEnvironment(os.LookupEnv, runtime.GOOS))
+	if err != nil {
+		t.Fatalf("runProcessOutput with the baseline: %v", err)
+	}
+	if strings.Contains(string(output), "-mod=mod") {
+		t.Fatalf("the ambient operator environment leaked into the process: %q", output)
+	}
+}
+
+func TestFailureOutputTail(t *testing.T) {
+	// An empty or whitespace-only output carries no evidence and binds nothing.
+	if got := failureOutputTail(nil); got != "" {
+		t.Fatalf("empty output binds nothing: %q", got)
+	}
+	if got := failureOutputTail([]byte(" \n")); got != "" {
+		t.Fatalf("whitespace-only output binds nothing: %q", got)
+	}
+	// The small form is the trimmed content.
+	if got := failureOutputTail([]byte("  boom\n")); got != "boom" {
+		t.Fatalf("the tail is trimmed: %q", got)
+	}
+	// The oversized form is the capped tail with the deterministic elision
+	// marker naming the elided bytes.
+	oversized := strings.Repeat("x", maxFailureOutputBytes+16)
+	got := failureOutputTail([]byte(oversized))
+	if !strings.Contains(got, "[16 bytes elided]") {
+		t.Fatalf("the elision marker names the elided bytes: %q", got[:64])
+	}
+	if len(got) > maxFailureOutputBytes+64 {
+		t.Fatalf("the tail stays bounded: %d", len(got))
+	}
+}
+
+func TestRunProcessFailureSurfacesTheOutputTail(t *testing.T) {
+	// A failed gate step surfaces the bounded captured output of the step —
+	// never a bare exit code while the step's output exists.
+	err := runProcess(context.Background(), ".", "go", []string{"nosuchcommand"}, nil)
+	if err == nil {
+		t.Fatal("expected the unknown-command failure")
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("the failure must carry the step's output: %q", err)
+	}
+	// A failure without captured output binds the bare error.
+	err = runProcess(context.Background(), ".", "no-such-binary-gqa24", nil, nil)
+	if err == nil {
+		t.Fatal("expected the missing-binary failure")
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Fatalf("a failure without output carries no tail: %q", err)
 	}
 }
 
@@ -364,7 +578,7 @@ func TestOrchestratorRunStepWithDirectory(t *testing.T) {
 	o, calls := fakeOrchestrator(fs)
 	o.GoFiles = func(string) ([]string, error) { return []string{"main.go"}, nil }
 	// Inject a step with an explicit working directory through the plan.
-	steps, err := o.Plan(".")
+	steps, err := o.Plan(context.Background(), ".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,8 +601,11 @@ func TestOrchestratorRunStepWithDirectory(t *testing.T) {
 
 func TestNewOrchestratorProductionSeams(t *testing.T) {
 	o := NewOrchestrator(testConfig(), io.Discard, io.Discard)
-	if err := o.Execute(context.Background(), ".", "go", "version"); err != nil {
+	if err := o.Execute(context.Background(), ".", "go", []string{"version"}, nil); err != nil {
 		t.Fatalf("production Execute seam: %v", err)
+	}
+	if _, err := o.ExecuteOutput(context.Background(), ".", "go", []string{"version"}, nil); err != nil {
+		t.Fatalf("production ExecuteOutput seam: %v", err)
 	}
 	if _, err := o.GoVersion(context.Background(), "."); err != nil {
 		t.Fatalf("production GoVersion seam: %v", err)
@@ -396,6 +613,23 @@ func TestNewOrchestratorProductionSeams(t *testing.T) {
 	// The tools-module probe runs against a real tree.
 	if o.HasToolsMod(t.TempDir()) {
 		t.Fatal("expected no tools module in an empty tree")
+	}
+	// The YAML discovery and document read seams run against a real tree.
+	yamlDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(yamlDir, "doc.yml"), []byte("key: value\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	documents, err := o.YAMLFiles(yamlDir)
+	if err != nil || len(documents) != 1 {
+		t.Fatalf("production YAMLFiles seam: %v, %+v", err, documents)
+	}
+	contents, err := o.ReadFile(documents[0])
+	if err != nil || !strings.Contains(string(contents), "key: value") {
+		t.Fatalf("production ReadFile seam: %v, %q", err, contents)
+	}
+	// The pack engine is bound with its production seams.
+	if o.Packs.ExecuteOutput == nil || o.Packs.ReadFile == nil || o.Packs.Fetch == nil || o.Packs.UserCacheDir == nil {
+		t.Fatal("expected the pack engine production seams to be bound")
 	}
 }
 
@@ -426,5 +660,502 @@ func TestGoSourceFilesSkipsIgnoredDirectories(t *testing.T) {
 	}
 	if len(files) != 1 || files[0] != "main.go" {
 		t.Fatalf("files = %+v", files)
+	}
+}
+
+func TestOrchestratorRunStepAssertion(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("cmd/tool/main.go", "package main\n")
+	o, _ := fakeOrchestrator(fs)
+	step := Step{Name: "opentofu-version", Executable: "tofu", Args: []string{"version"}, Expect: "OpenTofu v1.12.5"}
+	// The assertion passes when the output carries the expectation.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return []byte("OpenTofu v1.12.5"), nil
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep assertion: %v", err)
+	}
+	// The assertion fails closed when the expectation is missing.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return []byte("other"), nil
+	}
+	if err := o.runStep(context.Background(), ".", step); err == nil {
+		t.Fatal("expected the assertion mismatch finding")
+	} else if !strings.Contains(err.Error(), "requires the output to carry") {
+		t.Fatalf("error = %q", err)
+	}
+	// The assertion fails closed on the execution error.
+	o.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return nil, errors.New("boom")
+	}
+	if err := o.runStep(context.Background(), ".", step); err == nil {
+		t.Fatal("expected the assertion execution finding")
+	}
+}
+
+func TestOrchestratorRunStepEnvPropagated(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("cmd/tool/main.go", "package main\n")
+	o, calls := fakeOrchestrator(fs)
+	step := Step{Name: "opentofu-fmt-check", Executable: "tofu", Args: []string{"fmt"}, Env: []string{"TF_IN_AUTOMATION=true"}}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep: %v", err)
+	}
+	found := false
+	for _, call := range *calls {
+		if call.Executable == "tofu" && len(call.Env) == 1 && call.Env[0] == "TF_IN_AUTOMATION=true" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the pack environment to reach the process")
+	}
+}
+
+func TestOrchestratorProvisionNoDeclarations(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	var stdout strings.Builder
+	o.Stdout = &stdout
+	if err := o.Provision(context.Background(), "."); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "No capability packs declared") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestOrchestratorProvisionNilContext(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	var stdout strings.Builder
+	o.Stdout = &stdout
+	// A nil context is normalized to the background context.
+	if err := o.Provision(testNilContext(), "."); err != nil {
+		t.Fatalf("Provision with nil context: %v", err)
+	}
+}
+
+func TestOrchestratorProvisionResolutionError(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	o.Config.Extends = []string{"opentofu@1"}
+	o.Packs.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return nil, errors.New("module not pinned")
+	}
+	if err := o.Provision(context.Background(), "."); err == nil {
+		t.Fatal("expected the resolution finding")
+	}
+}
+
+func TestOrchestratorProvisionDelegation(t *testing.T) {
+	fs := newVirtualFS()
+	o, _ := fakeOrchestrator(fs)
+	o.Config.Extends = []string{"opentofu@1"}
+	// The working-tree registry carries the pack with the digest of the
+	// fixture archive and the publisher-signed signature reference; the
+	// shared-kernel registry carries the verifier bootstrap through the
+	// tooling channel, so the recipe runs end-to-end against the fake seams.
+	archive := buildZip(t, map[string]string{"tofu": "tool-binary"})
+	sum := sha256.Sum256(archive)
+	document := strings.Replace(validPackJSON(), "https://example.com/tofu.zip", "https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.zip", -1)
+	document = strings.Replace(document, `"sha256":"dade9650e6b74fc7a8b986bd8717497d32f9e09cf82e479afef4977fa3085536"`, `"sha256":"`+hex.EncodeToString(sum[:])+`"`, 1)
+	fs.addFile("go.mod", "module "+territoryHomeModule+"\n")
+	fs.addFile("capabilities/infrastructure/opentofu/v1/pack.json", document)
+	fs.addFile("scg/capabilities/security/cosign/v1/pack.json", verifierDescriptorJSON(t))
+	o.Packs.ExecuteOutput = func(_ context.Context, _ string, executable string, args []string, _ []string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if executable == "go" {
+			if module, found := strings.CutPrefix(joined, "mod download "); found {
+				if module == sharedKernelModule {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("module %s is not pinned", module)
+			}
+			if module, found := strings.CutPrefix(joined, "list -m -f {{.Dir}} "); found {
+				if module == sharedKernelModule {
+					return []byte("scg\n"), nil
+				}
+				return nil, fmt.Errorf("module %s is not pinned", module)
+			}
+			return nil, errors.New("unexpected go invocation")
+		}
+		if strings.HasPrefix(joined, "version") {
+			return []byte("GitVersion:    v3.0.6"), nil
+		}
+		return []byte("verified"), nil
+	}
+	o.Packs.Fetch = func(_ context.Context, url string, _ int64) ([]byte, error) {
+		switch url {
+		case "https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.zip":
+			return archive, nil
+		case "https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.zip.sig":
+			return []byte("signature"), nil
+		case "https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.zip.pem":
+			return []byte("certificate"), nil
+		case "https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64":
+			return verifierBinary(), nil
+		}
+		return nil, errors.New("unexpected download")
+	}
+	var stdout strings.Builder
+	o.Packs.Stdout = &stdout
+	if err := o.Provision(context.Background(), "."); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "provisioned cosign@1") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "provisioned opentofu@1") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestOrchestratorProvisionVerifier(t *testing.T) {
+	// The lane-facing verifier provisioning: the engine-bound verifier is
+	// resolved against the shared-kernel registry at the pinned stand, and its
+	// deterministic tool path is the single stdout line of the orchestrator.
+	fs := newVirtualFS()
+	o, _ := fakeOrchestrator(fs)
+	fs.addFile("go.mod", "module "+territoryHomeModule+"\n")
+	fs.addFile("scg/capabilities/security/cosign/v1/pack.json", verifierDescriptorJSON(t))
+	o.Packs.ExecuteOutput = func(_ context.Context, _ string, executable string, args []string, _ []string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if executable == "go" {
+			if module, found := strings.CutPrefix(joined, "mod download "); found {
+				if module == sharedKernelModule {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("module %s is not pinned", module)
+			}
+			if module, found := strings.CutPrefix(joined, "list -m -f {{.Dir}} "); found {
+				if module == sharedKernelModule {
+					return []byte("scg\n"), nil
+				}
+				return nil, fmt.Errorf("module %s is not pinned", module)
+			}
+			return nil, errors.New("unexpected go invocation")
+		}
+		if strings.HasPrefix(joined, "version") {
+			return []byte("GitVersion:    v3.0.6"), nil
+		}
+		return nil, errors.New("unexpected invocation")
+	}
+	o.Packs.Fetch = func(_ context.Context, url string, _ int64) ([]byte, error) {
+		if url == "https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64" {
+			return verifierBinary(), nil
+		}
+		return nil, errors.New("unexpected download")
+	}
+	var engineStatus strings.Builder
+	o.Packs.Stdout = &engineStatus
+	var stdout strings.Builder
+	o.Stdout = &stdout
+	if err := o.ProvisionVerifier(context.Background(), "."); err != nil {
+		t.Fatalf("ProvisionVerifier: %v", err)
+	}
+	want := filepath.Join("cache", "go-quality-authority", "packs", "cosign", "v1", "linux-amd64", "cosign")
+	if strings.TrimSpace(stdout.String()) != want {
+		t.Fatalf("stdout = %q, want the tool path %q", stdout.String(), want)
+	}
+	if !strings.Contains(engineStatus.String(), "provisioned cosign@1") {
+		t.Fatalf("engine status = %q", engineStatus.String())
+	}
+}
+
+func TestOrchestratorProvisionVerifierEmptyRoot(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	if err := o.ProvisionVerifier(context.Background(), " "); err == nil {
+		t.Fatal("expected the empty-root finding")
+	}
+}
+
+func TestOrchestratorProvisionVerifierNilContext(t *testing.T) {
+	// A nil context is normalized to the background context; the engine error
+	// proves the call reached the machinery.
+	o, _ := fakeOrchestrator(newVirtualFS())
+	if err := o.ProvisionVerifier(testNilContext(), "."); err == nil {
+		t.Fatal("expected the engine finding without a bound registry")
+	}
+}
+
+func TestOrchestratorProvisionVerifierEngineError(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	o.Packs.ExecuteOutput = func(context.Context, string, string, []string, []string) ([]byte, error) {
+		return nil, errors.New("module not pinned")
+	}
+	if err := o.ProvisionVerifier(context.Background(), "."); err == nil {
+		t.Fatal("expected the engine finding")
+	}
+}
+
+// TestOrchestratorRunStagedPackGates proves the clean-staging execution
+// environment: every pack gate executes against the materialized staging of
+// its unit, every unit is materialized lazily once, and every unit is
+// released — at the transition and at the end of the plan.
+func TestOrchestratorRunStagedPackGates(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	fs.addFile("stacks/b/main.tf", "resource {}\n")
+	o, calls := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	toolPath, err := o.Packs.ToolPath(pack)
+	if err != nil {
+		t.Fatalf("ToolPath: %v", err)
+	}
+	o.ExecuteOutput = func(_ context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		switch executable {
+		case "git":
+			return []byte("stacks/a/main.tf\x00stacks/b/main.tf\x00"), nil
+		case "gofmt":
+			return []byte(""), nil
+		default:
+			return []byte("OpenTofu v1.12.5"), nil
+		}
+	}
+	removed := []string{}
+	o.RemoveAll = func(path string) error {
+		removed = append(removed, path)
+		return nil
+	}
+	if err := o.Run(context.Background(), "."); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var formatDir, validateA, validateB string
+	gitCalls := 0
+	for _, call := range *calls {
+		if call.Executable == "git" {
+			gitCalls++
+		}
+		if call.Executable == toolPath && len(call.Args) > 0 {
+			switch call.Args[0] {
+			case "fmt":
+				formatDir = call.Dir
+			case "validate":
+				if validateA == "" {
+					validateA = call.Dir
+				} else {
+					validateB = call.Dir
+				}
+			}
+		}
+	}
+	if formatDir != "staging-1" {
+		t.Fatalf("the repository gate must execute against the repository staging, got %q", formatDir)
+	}
+	if validateA != filepath.Join("staging-2", "stacks", "a") || validateB != filepath.Join("staging-3", "stacks", "b") {
+		t.Fatalf("the per-root gates must execute against their root's staging, got %q and %q", validateA, validateB)
+	}
+	if gitCalls != 3 {
+		t.Fatalf("every unit is materialized exactly once, got %d enumerations", gitCalls)
+	}
+	if strings.Join(removed, ",") != "staging-1,staging-2,staging-3" {
+		t.Fatalf("every unit is released in order, got %+v", removed)
+	}
+}
+
+// TestOrchestratorRunStepInProcess proves the engine-machinery dispatch: the
+// step runs in-process with the resolved directory, and its failure wraps the
+// step name.
+func TestOrchestratorRunStepInProcess(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	var gotDir string
+	step := Step{
+		Name: "engine machinery",
+		Dir:  "tools",
+		inProcess: func(ctx context.Context, dir string) error {
+			gotDir = dir
+			return nil
+		},
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep: %v", err)
+	}
+	if gotDir != filepath.Join(".", "tools") {
+		t.Fatalf("the in-process directory = %q", gotDir)
+	}
+	step.inProcess = func(context.Context, string) error { return errors.New("boom") }
+	err := o.runStep(context.Background(), ".", step)
+	if err == nil || !strings.Contains(err.Error(), "engine machinery: boom") {
+		t.Fatalf("the in-process failure must wrap the step name: %v", err)
+	}
+}
+
+// TestOrchestratorRunStepStagedInProcess proves the engine-machinery dispatch
+// against a clean staging: the handler receives the staged directory of its
+// unit.
+func TestOrchestratorRunStepStagedInProcess(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	o, _ := fakeOrchestrator(fs)
+	o.ExecuteOutput = func(_ context.Context, _ string, executable string, args []string, _ []string) ([]byte, error) {
+		if executable == "git" {
+			return []byte("stacks/a/main.tf\x00"), nil
+		}
+		return nil, errors.New("unexpected process invocation")
+	}
+	var gotDir string
+	unit := &packStaging{scope: "stacks/a"}
+	step := Step{
+		Name:    "engine machinery (stacks/a)",
+		Dir:     "stacks/a",
+		staging: unit,
+		inProcess: func(ctx context.Context, dir string) error {
+			gotDir = dir
+			return nil
+		},
+	}
+	if err := o.runStep(context.Background(), ".", step); err != nil {
+		t.Fatalf("runStep: %v", err)
+	}
+	if gotDir != filepath.Join("staging-1", "stacks", "a") {
+		t.Fatalf("the staged in-process directory = %q", gotDir)
+	}
+	// The staged content carries the committed form of the root.
+	contents, err := o.ReadFile(filepath.Join("staging-1", "stacks", "a", "main.tf"))
+	if err != nil || string(contents) != "resource {}\n" {
+		t.Fatalf("the staged content = %q, %v", contents, err)
+	}
+}
+
+// TestOrchestratorRunStagingCleanupOnFailure proves the fail-closed staging
+// lifecycle: a failed sequence still releases its active unit.
+func TestOrchestratorRunStagingCleanupOnFailure(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	o, calls := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	toolPath, err := o.Packs.ToolPath(pack)
+	if err != nil {
+		t.Fatalf("ToolPath: %v", err)
+	}
+	o.ExecuteOutput = func(_ context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		switch executable {
+		case "git":
+			return []byte("stacks/a/main.tf\x00"), nil
+		case "gofmt":
+			return []byte(""), nil
+		default:
+			return []byte("OpenTofu v1.12.5"), nil
+		}
+	}
+	o.Execute = func(_ context.Context, dir, executable string, args []string, env []string) error {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		if executable == toolPath && len(args) > 0 && args[0] == "validate" {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	removed := []string{}
+	o.RemoveAll = func(path string) error {
+		removed = append(removed, path)
+		return nil
+	}
+	if err := o.Run(context.Background(), "."); err == nil {
+		t.Fatal("expected the gate failure")
+	}
+	if strings.Join(removed, ",") != "staging-1,staging-2" {
+		t.Fatalf("the repository unit and the active root unit are released, got %+v", removed)
+	}
+}
+
+// TestOrchestratorRunStagingTransitionCleanupError proves the transition
+// cleanup is fail-closed.
+func TestOrchestratorRunStagingTransitionCleanupError(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	o, calls := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	o.ExecuteOutput = func(_ context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		switch executable {
+		case "git":
+			return []byte("stacks/a/main.tf\x00"), nil
+		case "gofmt":
+			return []byte(""), nil
+		default:
+			return []byte("OpenTofu v1.12.5"), nil
+		}
+	}
+	o.RemoveAll = func(string) error { return errors.New("boom") }
+	err := o.Run(context.Background(), ".")
+	if err == nil || !strings.Contains(err.Error(), "release the clean staging") {
+		t.Fatalf("expected the cleanup finding, got %v", err)
+	}
+}
+
+// TestOrchestratorRunStagingFinalCleanupError proves the final cleanup of the
+// plan is fail-closed.
+func TestOrchestratorRunStagingFinalCleanupError(t *testing.T) {
+	fs := newVirtualFS()
+	fs.addFile("stacks/a/main.tf", "resource {}\n")
+	o, calls := fakeOrchestrator(fs)
+	pack := testResolvedPack()
+	provisionPack(t, &o, fs, pack)
+	o.ExecuteOutput = func(_ context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+		*calls = append(*calls, recordedCall{Dir: dir, Executable: executable, Args: args, Env: env})
+		switch executable {
+		case "git":
+			return []byte("stacks/a/main.tf\x00"), nil
+		case "gofmt":
+			return []byte(""), nil
+		default:
+			return []byte("OpenTofu v1.12.5"), nil
+		}
+	}
+	o.RemoveAll = func(path string) error {
+		if path == "staging-2" {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	err := o.Run(context.Background(), ".")
+	if err == nil || !strings.Contains(err.Error(), "release the clean staging") {
+		t.Fatalf("expected the final cleanup finding, got %v", err)
+	}
+}
+
+// TestOrchestratorRunStagingMaterializeError proves a staging failure fails
+// the step closed.
+func TestOrchestratorRunStagingMaterializeError(t *testing.T) {
+	o, _ := fakeOrchestrator(newVirtualFS())
+	o.TempDir = func(string) (string, error) { return "", errors.New("boom") }
+	unit := &packStaging{scope: "stacks/a"}
+	step := Step{
+		Name:    "opentofu-validate (stacks/a)",
+		Dir:     "stacks/a",
+		staging: unit,
+	}
+	err := o.runStep(context.Background(), ".", step)
+	if err == nil || !strings.Contains(err.Error(), "create the clean staging") {
+		t.Fatalf("expected the materialize finding, got %v", err)
+	}
+}
+
+// TestNewOrchestratorStagingSeams proves the production staging seams are
+// bound and operate against a real tree.
+func TestNewOrchestratorStagingSeams(t *testing.T) {
+	o := NewOrchestrator(testConfig(), io.Discard, io.Discard)
+	if o.TempDir == nil || o.MkdirAll == nil || o.WriteFile == nil || o.RemoveAll == nil {
+		t.Fatal("expected the staging seams to be bound")
+	}
+	dir, err := o.TempDir("staging-seam-")
+	if err != nil {
+		t.Fatalf("TempDir: %v", err)
+	}
+	if err := o.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := o.WriteFile(filepath.Join(dir, "nested", "x.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	contents, err := o.ReadFile(filepath.Join(dir, "nested", "x.txt"))
+	if err != nil || string(contents) != "x" {
+		t.Fatalf("ReadFile: %v, %q", err, contents)
+	}
+	if err := o.RemoveAll(dir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
 	}
 }

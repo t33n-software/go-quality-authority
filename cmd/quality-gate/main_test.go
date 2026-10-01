@@ -15,8 +15,8 @@ import (
 func writeConfig(t *testing.T, dir string) {
 	t.Helper()
 	contents := `{
-  "schemaVersion": 3,
-  "toolchain": { "goVersion": "1.26.6" },
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "1.26.6" },
   "gates": [{"name":"full-local-build","command":"go","args":["version"]}]
 }`
 	if err := os.WriteFile(filepath.Join(dir, configFileName), []byte(contents), 0o644); err != nil {
@@ -111,7 +111,7 @@ func TestRunQualityGateDelegation(t *testing.T) {
 func testConfigForMain() quality.Config {
 	return quality.Config{
 		SchemaVersion: quality.SchemaVersion,
-		Toolchain:     quality.Toolchain{GoVersion: "1.26.6"},
+		Toolchain:     quality.Toolchain{Language: "go", Version: "1.26.6"},
 		Gates:         []quality.Gate{{Name: "full-local-build", Command: "go"}},
 	}
 }
@@ -125,5 +125,105 @@ func TestMain(t *testing.T) {
 	main()
 	if code != 0 {
 		t.Fatalf("main exit = %d", code)
+	}
+}
+
+func TestRunProvision(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir)
+	defer func() { runProvision = runQualityProvision }()
+	runProvision = func(_ context.Context, _ quality.Config, root string, _, _ io.Writer) error {
+		if root != dir {
+			t.Fatalf("root = %q", root)
+		}
+		return nil
+	}
+	var stdout, stderr strings.Builder
+	if code := run(context.Background(), []string{"provision", "--repo=" + dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run provision = %d, want 0", code)
+	}
+}
+
+func TestRunProvisionError(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir)
+	defer func() { runProvision = runQualityProvision }()
+	runProvision = func(context.Context, quality.Config, string, io.Writer, io.Writer) error {
+		return errors.New("boom")
+	}
+	var stdout, stderr strings.Builder
+	code := run(context.Background(), []string{"provision", "--repo=" + dir}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run provision with error = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "quality provision") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunProvisionDuplicateUsage(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if code := run(context.Background(), []string{"provision", "provision"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("run with a duplicate provision = %d, want 2", code)
+	}
+}
+
+func TestRunQualityProvisionDelegation(t *testing.T) {
+	// The delegation constructs the production orchestrator; a blank root fails
+	// fast inside the resolution, which exercises the seam without running
+	// real recipes.
+	config := testConfigForMain()
+	config.Extends = []string{"opentofu@1"}
+	if err := runQualityProvision(context.Background(), config, " ", io.Discard, io.Discard); err == nil {
+		t.Fatal("expected the delegation to surface the resolution error")
+	}
+}
+
+func TestRunProvisionVerifier(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir)
+	defer func() { runProvisionVerifier = runQualityProvisionVerifier }()
+	runProvisionVerifier = func(_ context.Context, _ quality.Config, root string, _, _ io.Writer) error {
+		if root != dir {
+			t.Fatalf("root = %q", root)
+		}
+		return nil
+	}
+	var stdout, stderr strings.Builder
+	if code := run(context.Background(), []string{"provision-verifier", "--repo=" + dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run provision-verifier = %d, want 0", code)
+	}
+}
+
+func TestRunProvisionVerifierError(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir)
+	defer func() { runProvisionVerifier = runQualityProvisionVerifier }()
+	runProvisionVerifier = func(context.Context, quality.Config, string, io.Writer, io.Writer) error {
+		return errors.New("boom")
+	}
+	var stdout, stderr strings.Builder
+	code := run(context.Background(), []string{"provision-verifier", "--repo=" + dir}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run provision-verifier with error = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "quality provision-verifier") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunMixedModeUsage(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if code := run(context.Background(), []string{"provision", "provision-verifier"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("run with mixed modes = %d, want 2", code)
+	}
+}
+
+func TestRunQualityProvisionVerifierDelegation(t *testing.T) {
+	// The delegation constructs the production orchestrator and routes the
+	// engine status to stderr; a blank root fails fast inside the verifier
+	// provisioning, which exercises the seam without running a real recipe.
+	if err := runQualityProvisionVerifier(context.Background(), testConfigForMain(), " ", io.Discard, io.Discard); err == nil {
+		t.Fatal("expected the delegation to surface the verifier provisioning error")
 	}
 }

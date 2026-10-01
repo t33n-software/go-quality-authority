@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 4,
+  "toolchain": { "language": "go", "version": "latest" },
+  "gates": [{ "name": "full-local-build", "command": "go" }]
+}

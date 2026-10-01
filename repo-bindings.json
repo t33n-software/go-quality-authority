@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "home": {
+    "repository": "t33n-software/repository-governance",
+    "sha": "163bc21ca2120058a04555ef0dcc4eebb7fa39a2"
+  },
+  "class": {
+    "qualityGates": "linux-only",
+    "codeScanning": true,
+    "licenseHub": true
+  },
+  "callers": [
+    {
+      "file": ".github/workflows/ci.yml",
+      "master": "hosting-platforms/github/workflows/callers/go/ci.yml",
+      "sha256": "834769ae1bc3881bb63bcecba9659da8a3b19140029ef4011ce8c69ae2a7a8d2"
+    },
+    {
+      "file": ".github/workflows/codeql.yml",
+      "master": "hosting-platforms/github/workflows/callers/go/codeql.yml",
+      "sha256": "bf9e7940106d3c5bc7ea27f2052132cfc293a27d09b1db83b3f9569249eef008"
+    },
+    {
+      "file": ".github/workflows/dependency-review.yml",
+      "master": "hosting-platforms/github/workflows/callers/go/dependency-review.yml",
+      "sha256": "cbb4066be301ea2177b4e092e08d2ac96a351f6b77540f7ad3d2f08d56e5d6c2"
+    },
+    {
+      "file": ".github/workflows/canonical-conformance.yml",
+      "master": "hosting-platforms/github/workflows/callers/go/canonical-conformance.yml",
+      "sha256": "09f46e4e12c79872214a30ca6d4ef6e5796f7c43119bb3f95d20378119e83d6b"
+    }
+  ],
+  "files": {
+    "lefthook": { "path": "lefthook.yml", "sha256": "86562f27a6a34b252028b74fb39ba0373636bf539e6c4d2d5b820a362971520a" },
+    "gitattributes": { "path": ".gitattributes", "sha256": "9b7d6d0a795e9231cc202592520f3e4692f83ca13a5a9e8e3086ef7bc39b5cfa" },
+    "gitignore": { "path": ".gitignore", "fragments": ["core", "go/core"], "sha256": "45ea39aa330ab47051c7dfd71e8fd9c5e8332f6c89b76f0a53111e668eb3b0f7" },
+    "dependabot": { "path": ".github/dependabot.yml", "sha256": "a28369d1dc1b8eb6cdcef8405fccca644a509fc640fdc8ab3f12adbc0291940a" }
+  },
+  "codeowners": { "path": ".github/CODEOWNERS", "defaultOwner": "@CyberT33N" },
+  "quality": { "config": "git-governance.quality.json", "schemaVersion": 4 },
+  "tools": { "module": "tools/go.mod", "catalogVersion": 1 }
+}

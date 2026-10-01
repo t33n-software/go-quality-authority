@@ -31,6 +31,24 @@
       "module": "github.com/t33n-software/go-quality-authority",
       "package": "github.com/t33n-software/go-quality-authority/cmd/check-coverage",
       "purpose": "coverage gate"
+    },
+    {
+      "name": "git-governance",
+      "module": "github.com/t33n-software/git-governance",
+      "package": "github.com/t33n-software/git-governance/cmd/git-governance",
+      "purpose": "governance CLI for the lifecycle lanes"
+    },
+    {
+      "name": "license",
+      "module": "github.com/t33n-software/license-hub",
+      "package": "github.com/t33n-software/license-hub/cmd/license",
+      "purpose": "license render and verify CLI for the canonical license instances"
+    },
+    {
+      "name": "provision-canonical",
+      "module": "github.com/t33n-software/repository-governance",
+      "package": "github.com/t33n-software/repository-governance/cmd/provision-canonical",
+      "purpose": "canonical file family provisioning CLI for the governed tenant surfaces"
     }
   ]
 }

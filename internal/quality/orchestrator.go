@@ -15,31 +15,64 @@ import (
 	"time"
 )
 
-// Step is one quality-gate command in the canonical plan.
+// Step is one quality-gate command in the canonical plan. A step with a
+// non-empty Expect is a fail-closed assertion: its combined output must carry
+// the expected proof text. Env carries the exact environment of a pack step —
+// the controlled form composed by the engine from the governed baseline and
+// the pack's declared environment; a nil Env inherits the process environment
+// unchanged (the core gates and the engine's own machinery).
 type Step struct {
 	Name       string
 	Dir        string
 	Executable string
 	Args       []string
+	Env        []string
+	Expect     string
 	Timeout    time.Duration
+	// staging binds the step to its clean-staging execution unit; nil for the
+	// core and project gates, which run against the working directory.
+	staging *packStaging
+	// inProcess marks an engine-machinery step executed inside the
+	// orchestrator process with the resolved directory — the execution form
+	// of the pack-major gate semantics that no tool invocation can express.
+	inProcess func(ctx context.Context, dir string) error
 }
 
 // Orchestrator runs the canonical quality gate set for a tenant repository.
 // It reads the schema-validated configuration seam, asserts the controlled
-// toolchain, executes the canonical gates, and applies convention discovery
-// for command binaries and fuzz targets. It never mutates go.mod or go.sum.
+// toolchain, executes the canonical gates, resolves and provisions the
+// declared capability packs, and applies convention discovery for command
+// binaries and fuzz targets. It never mutates go.mod or go.sum.
 type Orchestrator struct {
-	Config    Config
-	Discover  Discoverer
-	Coverage  CoverageRunner
-	Execute   func(ctx context.Context, dir, executable string, args ...string) error
-	GoVersion func(ctx context.Context, dir string) (string, error)
-	Stdout    io.Writer
-	Stderr    io.Writer
+	Config   Config
+	Discover Discoverer
+	Coverage CoverageRunner
+	// Execute runs a plan step without capturing its output.
+	Execute func(ctx context.Context, dir, executable string, args []string, env []string) error
+	// ExecuteOutput runs a plan step and returns its combined output; the
+	// pack assertions consume it.
+	ExecuteOutput func(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error)
+	GoVersion     func(ctx context.Context, dir string) (string, error)
+	Stdout        io.Writer
+	Stderr        io.Writer
 	// HasToolsMod reports whether the tenant carries a tools module.
 	HasToolsMod func(root string) bool
 	// GoFiles returns the repository's Go source files for the format gate.
 	GoFiles func(root string) ([]string, error)
+	// YAMLFiles returns the repository's YAML documents for the
+	// wellformedness gate.
+	YAMLFiles func(root string) ([]string, error)
+	// ReadFile reads a discovered document for the in-process proofs.
+	ReadFile func(string) ([]byte, error)
+	// TempDir, MkdirAll, WriteFile, and RemoveAll are the seams of the clean
+	// staging execution environment of the pack gates.
+	TempDir   func(pattern string) (string, error)
+	MkdirAll  func(string, os.FileMode) error
+	WriteFile func(string, []byte, os.FileMode) error
+	RemoveAll func(string) error
+	// Packs is the capability-pack machinery: resolution, provisioning, and
+	// the pack gate plan.
+	Packs PackEngine
 }
 
 // NewOrchestrator binds the production seams of an Orchestrator.
@@ -54,11 +87,14 @@ func NewOrchestrator(config Config, stdout, stderr io.Writer) Orchestrator {
 		Config:   config,
 		Discover: NewDiscoverer(),
 		Coverage: NewCoverageRunner(stdout, stderr),
-		Execute: func(ctx context.Context, dir, executable string, args ...string) error {
-			return runProcess(ctx, dir, executable, args...)
+		Execute: func(ctx context.Context, dir, executable string, args []string, env []string) error {
+			return runProcess(ctx, dir, executable, args, env)
+		},
+		ExecuteOutput: func(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
+			return runProcessOutput(ctx, dir, executable, args, env)
 		},
 		GoVersion: func(ctx context.Context, dir string) (string, error) {
-			output, err := runProcessOutput(ctx, dir, "go", "env", "GOVERSION")
+			output, err := runProcessOutput(ctx, dir, "go", []string{"env", "GOVERSION"}, nil)
 			return strings.TrimSpace(string(output)), err
 		},
 		Stdout: stdout,
@@ -67,16 +103,40 @@ func NewOrchestrator(config Config, stdout, stderr io.Writer) Orchestrator {
 			_, err := os.Stat(filepath.Join(root, "tools", "go.mod"))
 			return err == nil
 		},
-		GoFiles: GoSourceFiles,
+		GoFiles:   GoSourceFiles,
+		YAMLFiles: YAMLFiles,
+		ReadFile:  os.ReadFile,
+		TempDir: func(pattern string) (string, error) {
+			return os.MkdirTemp("", pattern)
+		},
+		MkdirAll:  os.MkdirAll,
+		WriteFile: os.WriteFile,
+		RemoveAll: os.RemoveAll,
+		Packs:     NewPackEngine(stdout, stderr),
 	}
 }
 
 // Plan builds the canonical quality-gate plan for a tenant repository. The
-// plan is deterministic: identical configuration and discovery produce an
-// identical step list.
-func (o Orchestrator) Plan(root string) ([]Step, error) {
+// plan is deterministic: identical configuration, registry stand, and
+// discovery produce an identical step list. The composition order is fixed:
+// the core gates, then the pack gates, then the project gates.
+func (o Orchestrator) Plan(ctx context.Context, root string) ([]Step, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("a repository root is required for the quality gate")
+	}
+	// A declared pack is resolved against the registry union at the pinned
+	// stand; an unknown reference is a fail-closed finding, never a silent
+	// skip.
+	var packs []ResolvedPack
+	if len(o.Config.Extends) > 0 {
+		resolved, err := o.Packs.Resolve(ctx, root, o.Config.Extends)
+		if err != nil {
+			return nil, err
+		}
+		packs = resolved
 	}
 	binaries, err := o.Discover.DiscoverBinaries(root)
 	if err != nil {
@@ -90,6 +150,14 @@ func (o Orchestrator) Plan(root string) ([]Step, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list Go sources: %w", err)
 	}
+	yamlDocuments, err := o.YAMLFiles(root)
+	if err != nil {
+		return nil, fmt.Errorf("list YAML documents: %w", err)
+	}
+	packSteps, err := o.Packs.Steps(root, packs)
+	if err != nil {
+		return nil, err
+	}
 
 	steps := make([]Step, 0, 16)
 	steps = append(steps, Step{
@@ -99,22 +167,85 @@ func (o Orchestrator) Plan(root string) ([]Step, error) {
 	steps = append(steps, Step{
 		Name: "check Go formatting", Executable: "gofmt", Args: append([]string{"-l"}, goFiles...),
 	})
+	// The wellformedness gate is a core gate: every convention-discovered
+	// YAML document is parsed fail-closed, and a repository without YAML
+	// documents is vacuously green.
+	steps = append(steps, Step{
+		Name: "verify YAML wellformedness", Args: yamlDocuments,
+	})
 	steps = append(steps, canonicalAnalysisSteps(o.HasToolsMod(root))...)
+	steps = append(steps, packSteps...)
 	steps = append(steps, o.binarySteps(binaries)...)
 	steps = append(steps, o.fuzzSteps(fuzzTargets)...)
 	return steps, nil
 }
 
-// Run builds and executes the plan, failing closed on the first gate error.
-func (o Orchestrator) Run(ctx context.Context, root string) error {
+// Provision resolves the declared capability packs and executes their
+// recipes. A tenant without declarations provisions nothing.
+func (o Orchestrator) Provision(ctx context.Context, root string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	steps, err := o.Plan(root)
+	if len(o.Config.Extends) == 0 {
+		fmt.Fprintln(o.Stdout, "No capability packs declared.")
+		return nil
+	}
+	packs, err := o.Packs.Resolve(ctx, root, o.Config.Extends)
 	if err != nil {
 		return err
 	}
+	return o.Packs.Provision(ctx, root, packs)
+}
+
+// ProvisionVerifier provisions the engine-bound signature verifier for a lane
+// that must sign and prints its deterministic tool cache path as the single
+// stdout line, so the lane can place it on PATH. The verifier is
+// machinery-internal: it is resolved against the registry at the tenant's
+// pinned stand and provisioned digest-only under the single documented
+// bootstrap exception — never a tenant declaration, a payload-provided
+// installer step, or a runner assumption.
+func (o Orchestrator) ProvisionVerifier(ctx context.Context, root string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(root) == "" {
+		return errors.New("a repository root is required for verifier provisioning")
+	}
+	path, err := o.Packs.ProvisionVerifier(ctx, root)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(o.Stdout, path)
+	return nil
+}
+
+// Run builds and executes the plan, failing closed on the first gate error.
+// The clean-staging lifecycle of the pack gates is fail-closed: every unit is
+// released when the plan leaves it, a failed sequence still releases its
+// active unit, and a cleanup failure fails the run.
+func (o Orchestrator) Run(ctx context.Context, root string) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	steps, err := o.Plan(ctx, root)
+	if err != nil {
+		return err
+	}
+	var active *packStaging
+	defer func() {
+		if active != nil {
+			err = errors.Join(err, o.unstageStaging(active))
+		}
+	}()
 	for _, step := range steps {
+		if step.staging != active {
+			if active != nil {
+				if cleanupErr := o.unstageStaging(active); cleanupErr != nil {
+					return cleanupErr
+				}
+			}
+			active = step.staging
+		}
 		if err := o.runStep(ctx, root, step); err != nil {
 			return err
 		}
@@ -128,37 +259,87 @@ func (o Orchestrator) Run(ctx context.Context, root string) error {
 	return nil
 }
 
-// runStep executes one plan step with its timeout and working directory.
+// runStep executes one plan step with its timeout and working directory. A
+// step bound to a clean-staging unit executes against the materialized
+// staging of its unit — lazily materialized on the unit's first step — and an
+// engine-machinery step runs in-process with the resolved directory.
 func (o Orchestrator) runStep(ctx context.Context, root string, step Step) error {
 	fmt.Fprintln(o.Stdout, "==>", step.Name)
-	dir := root
-	if step.Dir != "" {
-		dir = filepath.Join(root, step.Dir)
-	}
 	timeout := step.Timeout
 	if timeout <= 0 {
 		timeout, _ = GateTimeout("")
 	}
 	stepCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	dir := root
+	if step.staging != nil {
+		if err := o.materializeStaging(stepCtx, root, step.staging); err != nil {
+			return fmt.Errorf("%s: %w", step.Name, err)
+		}
+		dir = step.staging.dir
+	}
+	if step.Dir != "" {
+		dir = filepath.Join(dir, step.Dir)
+	}
 	if step.Name == "verify controlled toolchain" {
 		return o.verifyToolchain(stepCtx, dir)
 	}
-	if err := o.Execute(stepCtx, dir, step.Executable, step.Args...); err != nil {
+	if step.Name == "check Go formatting" {
+		return o.verifyFormatting(stepCtx, dir, step.Args)
+	}
+	if step.Name == "verify YAML wellformedness" {
+		return o.verifyYAMLWellformedness(step.Args)
+	}
+	if step.inProcess != nil {
+		if err := step.inProcess(stepCtx, dir); err != nil {
+			return fmt.Errorf("%s: %w", step.Name, err)
+		}
+		return nil
+	}
+	if step.Expect != "" {
+		output, err := o.ExecuteOutput(stepCtx, dir, step.Executable, step.Args, step.Env)
+		if err != nil {
+			return fmt.Errorf("%s: %w", step.Name, err)
+		}
+		if !strings.Contains(string(output), step.Expect) {
+			return fmt.Errorf("%s: the assertion requires the output to carry %q", step.Name, step.Expect)
+		}
+		return nil
+	}
+	if err := o.Execute(stepCtx, dir, step.Executable, step.Args, step.Env); err != nil {
 		return fmt.Errorf("%s: %w", step.Name, err)
 	}
 	return nil
 }
 
 // verifyToolchain asserts that the running toolchain matches the pinned
-// configuration identity.
+// language-keyed configuration identity.
 func (o Orchestrator) verifyToolchain(ctx context.Context, dir string) error {
+	if o.Config.Toolchain.Language != "go" {
+		return fmt.Errorf("the Go territory orchestrator cannot assert the %q toolchain", o.Config.Toolchain.Language)
+	}
 	version, err := o.GoVersion(ctx, dir)
 	if err != nil {
 		return fmt.Errorf("read the controlled toolchain: %w", err)
 	}
-	if strings.TrimPrefix(version, "go") != strings.TrimPrefix(o.Config.Toolchain.GoVersion, "go") {
-		return fmt.Errorf("controlled toolchain mismatch: running %s, pinned %s", version, o.Config.Toolchain.GoVersion)
+	if strings.TrimPrefix(version, "go") != o.Config.Toolchain.Version {
+		return fmt.Errorf("controlled toolchain mismatch: running %s, pinned go%s", version, o.Config.Toolchain.Version)
+	}
+	return nil
+}
+
+// verifyFormatting is the fail-closed format proof: the controlled
+// toolchain's gofmt stays the measurement authority, and every listed file is
+// a finding. The proof evaluates the step's own gofmt invocation through the
+// output-capture seam — gofmt -l reports drift on its output stream and exits
+// zero either way, so an exit-code-only evaluation could never fail.
+func (o Orchestrator) verifyFormatting(ctx context.Context, dir string, args []string) error {
+	output, err := o.ExecuteOutput(ctx, dir, "gofmt", args, nil)
+	if err != nil {
+		return fmt.Errorf("check Go formatting: %w", err)
+	}
+	if drifted := strings.TrimSpace(string(output)); drifted != "" {
+		return fmt.Errorf("check Go formatting: files diverge from the governed format:\n%s", drifted)
 	}
 	return nil
 }
@@ -324,15 +505,52 @@ func goSourceFiles(root string, walk func(string, fs.WalkDirFunc) error) ([]stri
 	return files, nil
 }
 
-// runProcess executes a command, streaming its output to the process stderr.
-func runProcess(ctx context.Context, dir, executable string, args ...string) error {
-	_, err := runProcessOutput(ctx, dir, executable, args...)
-	return err
+// maxFailureOutputBytes bounds the captured tail of a failed step's combined
+// output: the failure evidence stays exact and the lane output bounded — a
+// capped tail, never an unbounded dump.
+const maxFailureOutputBytes = 32 << 10
+
+// failureOutputTail returns the bounded tail of a failed step's combined
+// output: the trailing content, capped at maxFailureOutputBytes, with a
+// deterministic elision marker when the output exceeds the bound. An empty or
+// whitespace-only output carries no evidence and binds nothing.
+func failureOutputTail(output []byte) string {
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) <= maxFailureOutputBytes {
+		return trimmed
+	}
+	return fmt.Sprintf("… [%d bytes elided]\n%s", len(trimmed)-maxFailureOutputBytes, trimmed[len(trimmed)-maxFailureOutputBytes:])
 }
 
-// runProcessOutput executes a command and returns its combined output.
-func runProcessOutput(ctx context.Context, dir, executable string, args ...string) ([]byte, error) {
+// runProcess executes a command whose output carries no proof content. A
+// failure surfaces the bounded captured tail of the step's combined output
+// with the error — a gate that reports a bare exit code while the step's
+// output exists is a governance defect, because an undiagnosed failure is an
+// unprovable gate.
+func runProcess(ctx context.Context, dir, executable string, args []string, env []string) error {
+	output, err := runProcessOutput(ctx, dir, executable, args, env)
+	if err != nil {
+		if tail := failureOutputTail(output); tail != "" {
+			return fmt.Errorf("%w\n%s", err, tail)
+		}
+		return err
+	}
+	return nil
+}
+
+// runProcessOutput executes a command and returns its combined output. A
+// non-nil env is the exact environment of the process — the controlled form
+// of the pack executions, composed by the engine from the governed baseline
+// and the pack's declared environment; a nil env inherits the process
+// environment unchanged (the core gates and the engine's own machinery).
+func runProcessOutput(ctx context.Context, dir, executable string, args []string, env []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, executable, args...)
 	command.Dir = dir
+	if env != nil {
+		command.Env = env
+	}
 	return command.CombinedOutput()
 }
