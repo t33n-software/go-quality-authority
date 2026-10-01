@@ -163,8 +163,8 @@ github.com/t33n-software/go-quality-authority v0.0.0-20260830173326-07bd6c9bf1fa
 github.com/t33n-software/go-quality-authority v0.0.0-20260830173326-07bd6c9bf1fa/go.mod h1:H0V5sIHFhaZy7EE2auGh9rt8lTyorCFTtedQxYKB/OY=
 github.com/t33n-software/license-hub v0.0.0-20260830165735-6f63ab95be35 h1:DBZ6MVLHVkFgsGt+FkmP7SJaPV1KpW65/8YGV0DyZ8Q=
 github.com/t33n-software/license-hub v0.0.0-20260830165735-6f63ab95be35/go.mod h1:iTqnCEFytqQNDagfEZIYm0s/I+GJDurn9CwGxgwOqSg=
-github.com/t33n-software/repository-governance v0.0.0-20260926171136-da3c59766ce2 h1:owaJ6uRPRoi/lM1nNG2gYkG8hqGf9h2W80jmzaBJmLA=
-github.com/t33n-software/repository-governance v0.0.0-20260926171136-da3c59766ce2/go.mod h1:+v/E4Ltv4l1GhZzldgyViXiMWtpXRGlVLZ53hB13OCk=
+github.com/t33n-software/repository-governance v0.0.0-20260930203819-a58e2a56edd9 h1:rjgxSs6sCFKUbOFo0RDJzsFC0orXa2PsU3Z6h2NmDqY=
+github.com/t33n-software/repository-governance v0.0.0-20260930203819-a58e2a56edd9/go.mod h1:+v/E4Ltv4l1GhZzldgyViXiMWtpXRGlVLZ53hB13OCk=
 github.com/tidwall/jsonc v0.3.3 h1:RVQqL3xFfDkKKXIDsrBiVQiEpBtxoKbmMXONb2H/y2w=
 github.com/tidwall/jsonc v0.3.3/go.mod h1:dw+3CIxqHi+t8eFSpzzMlcVYxKp08UP5CD8/uSFCyJE=
 github.com/urfave/cli/v3 v3.10.1 h1:7Kx9H50hrHbRbyxgO1KP6/BcbiGRz0uYh5YyQ30JEEY=
