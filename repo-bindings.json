@@ -33,7 +33,7 @@
   ],
   "files": {
     "lefthook": { "path": "lefthook.yml", "sha256": "86562f27a6a34b252028b74fb39ba0373636bf539e6c4d2d5b820a362971520a" },
-    "gitattributes": { "path": ".gitattributes", "sha256": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c" },
+    "gitattributes": { "path": ".gitattributes", "sha256": "9b7d6d0a795e9231cc202592520f3e4692f83ca13a5a9e8e3086ef7bc39b5cfa" },
     "gitignore": { "path": ".gitignore", "fragments": ["core", "go/core"], "sha256": "45ea39aa330ab47051c7dfd71e8fd9c5e8332f6c89b76f0a53111e668eb3b0f7" },
     "dependabot": { "path": ".github/dependabot.yml", "sha256": "a28369d1dc1b8eb6cdcef8405fccca644a509fc640fdc8ab3f12adbc0291940a" }
   },
