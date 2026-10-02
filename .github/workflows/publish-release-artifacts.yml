@@ -26,7 +26,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    uses: t33n-software/git-governance/.github/workflows/reusable-publish-release-artifacts.yml@77da3857d8db3f3567522651750980e087c0a6eb
+    uses: t33n-software/git-governance/.github/workflows/reusable-publish-release-artifacts.yml@889e2470366f6be91faf67fbaa5d405d17e979fa
     with:
       tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       delivery_variant: ${{ vars.GIT_GOVERNANCE_DELIVERY_VARIANT }}
