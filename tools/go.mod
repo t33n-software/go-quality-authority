@@ -8,6 +8,7 @@ tool (
 	github.com/t33n-software/go-quality-authority/cmd/check-coverage
 	github.com/t33n-software/go-quality-authority/cmd/quality-gate
 	github.com/t33n-software/license-hub/cmd/license
+	github.com/t33n-software/repository-governance/cmd/provision-canonical
 	github.com/t33n-software/repository-governance/cmd/verify-canonical
 	golang.org/x/vuln/cmd/govulncheck
 	honnef.co/go/tools/cmd/staticcheck
@@ -78,7 +79,7 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/t33n-software/git-governance v1.0.2-0.20260823095005-eb9df9c719b7 // indirect
 	github.com/t33n-software/license-hub v0.0.0-20260830165735-6f63ab95be35 // indirect
-	github.com/t33n-software/repository-governance v0.0.0-20260930203819-a58e2a56edd9 // indirect
+	github.com/t33n-software/repository-governance v1.2.0 // indirect
 	github.com/tidwall/jsonc v0.3.3 // indirect
 	github.com/urfave/cli/v3 v3.10.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
