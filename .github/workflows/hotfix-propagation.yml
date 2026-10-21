@@ -28,7 +28,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: t33n-software/git-governance/.github/workflows/reusable-hotfix-propagation.yml@77da3857d8db3f3567522651750980e087c0a6eb
+    uses: t33n-software/git-governance/.github/workflows/reusable-hotfix-propagation.yml@889e2470366f6be91faf67fbaa5d405d17e979fa
     with:
       hotfix_branch: ${{ inputs.hotfix_branch }}
       target_line: ${{ inputs.target_line }}
