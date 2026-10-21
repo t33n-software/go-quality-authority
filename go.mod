@@ -2,7 +2,7 @@ module github.com/t33n-software/go-quality-authority
 
 go 1.26.0
 
-toolchain go1.26.6
+toolchain go1.27.3
 
 require (
 	github.com/hashicorp/hcl/v2 v2.24.0
